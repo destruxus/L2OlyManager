@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy this file to config.json and fill in the values. config.json is git-ignored so your token stays private.",
+
+  "token": "PASTE-YOUR-BOT-TOKEN-HERE",
+
+  "guild_id": 0,
+  "_guild_id_help": "Right-click your Discord server icon (with Developer Mode on) -> Copy Server ID.",
+
+  "admin_role_name": "Olympiad Manager",
+  "_admin_role_help": "Members with this role (or Administrator permission) may run /setup, /remove, /rename and /close-month.",
+
+  "timezone": "Europe/Amsterdam",
+  "_timezone_help": "IANA timezone name. Used to decide when 'Friday' and 'last day of month' happen.",
+
+  "overview_hour": 18,
+  "_overview_hour_help": "Hour (0-23, local to timezone above) at which the Friday overview auto-posts.",
+
+  "contested_margin": 30,
+  "_contested_margin_help": "Points gap within which a member vs their top rival counts as a 'contested' (yellow) race.",
+
+  "min_matches_for_hero": 9,
+  "_min_matches_help": "Matches a member needs to be Hero-eligible. Set to 0 if you don't track matches.",
+
+  "database_path": "olympiad.db"
+}

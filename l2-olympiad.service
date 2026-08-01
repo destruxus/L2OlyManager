@@ -1,0 +1,28 @@
+# systemd unit to keep the bot running on your VPS.
+#
+# Install:
+#   1. Put the project in /opt/l2-olympiad-bot (or edit WorkingDirectory below).
+#   2. Create the venv + install deps (see README).
+#   3. sudo cp l2-olympiad.service /etc/systemd/system/
+#   4. sudo systemctl daemon-reload
+#   5. sudo systemctl enable --now l2-olympiad
+#   Logs: journalctl -u l2-olympiad -f
+
+[Unit]
+Description=L2 Grand Olympiad Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as a non-root user you created for the bot.
+User=olympiad
+WorkingDirectory=/opt/l2-olympiad-bot
+ExecStart=/opt/l2-olympiad-bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+# Don't leak the token into logs.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

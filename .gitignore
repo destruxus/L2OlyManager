@@ -1,0 +1,7 @@
+# Never commit your token or the live database.
+config.json
+*.db
+*.db-journal
+.venv/
+__pycache__/
+*.pyc
