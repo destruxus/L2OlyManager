@@ -57,7 +57,9 @@ chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 echo "==> Installing systemd service..."
 cp "$APP_DIR/l2-olympiad.service" /etc/systemd/system/l2-olympiad.service
 systemctl daemon-reload
-systemctl enable --now l2-olympiad
+systemctl enable l2-olympiad
+# restart (not just start) so a re-run always picks up new code.
+systemctl restart l2-olympiad
 
 echo
 echo "==> Done. Bot service is running."

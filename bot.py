@@ -172,6 +172,15 @@ def build_signup_view(class_rows) -> discord.ui.View:
     return view
 
 
+SIGNUP_TEXT = (
+    "**Follow your Olympiad classes**\n"
+    "Use the menu below to choose which classes you want visible. You'll only "
+    "see the channels for the classes you pick here — everything else stays hidden. "
+    "Re-open the menu any time to change your selection (pick every class you want; "
+    "un-picking one removes it)."
+)
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
@@ -332,34 +341,52 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     await db.set_setting("signup_channel_id", signup.id)
 
     # ---- Hidden category for class channels ----
+    # @everyone sees nothing here; the admin role sees every class; each class
+    # channel additionally grants its own class role. So the default is exactly:
+    # general channels visible to all, class channels hidden unless you hold the
+    # class role — and admins see them all.
+    admin_over = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    bot_over = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
     hidden = discord.utils.get(guild.categories, name=HIDDEN_CATEGORY)
     if hidden is None:
         hidden = await guild.create_category(
             HIDDEN_CATEGORY,
             overwrites={
                 everyone: discord.PermissionOverwrite(view_channel=False),
-                me: discord.PermissionOverwrite(view_channel=True),
+                admin_role: admin_over,
+                me: bot_over,
             },
         )
+    else:
+        # Repair an existing category so admins can see the whole thing.
+        await hidden.set_permissions(admin_role, view_channel=True, send_messages=True)
 
     created = 0
+    repaired = 0
     for cname in CLASSES:
         class_id = await db.upsert_class(cname)
         row = await db.get_class_by_name(cname)
-        if row["channel_id"] and force:
-            continue  # already built; skip on a resume run
         if row["channel_id"]:
+            # Already built. On a force run, repair admin visibility on it.
+            if force:
+                ch = guild.get_channel(row["channel_id"])
+                if ch is not None:
+                    await ch.set_permissions(
+                        admin_role, view_channel=True, send_messages=True
+                    )
+                    repaired += 1
             continue
 
-        # Class role (opt-in visibility key).
+        # Class role = the opt-in visibility key for this class.
         role = discord.utils.get(guild.roles, name=cname) or await guild.create_role(
             name=cname, mentionable=False, reason="Olympiad class role"
         )
-        # Role-gated channel.
         overwrites = {
             everyone: discord.PermissionOverwrite(view_channel=False),
             role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            admin_role: admin_over,
+            me: bot_over,
         }
         channel = await guild.create_text_channel(
             channel_name(cname), category=hidden, overwrites=overwrites
@@ -375,22 +402,48 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         await db.set_class_discord_ids(class_id, channel.id, points.id, talk.id, role.id)
         created += 1
 
-    # ---- Signup menu ----
-    rows = await db.list_classes()
-    view = build_signup_view(rows)
-    bot.add_view(view)
-    await signup.send(
-        "**Follow your Olympiad classes**\nPick the classes you want to see. "
-        "You'll only see channels for the classes you select here.",
-        view=view,
-    )
+    # ---- Signup menu (posted once; use /postmenu to repost) ----
+    if not await db.get_setting("signup_message_id"):
+        rows = await db.list_classes()
+        view = build_signup_view(rows)
+        bot.add_view(view)
+        msg = await signup.send(SIGNUP_TEXT, view=view)
+        await db.set_setting("signup_message_id", msg.id)
 
     await db.set_setting("current_month", month_label())
     await db.set_setting("setup_done", "1")
     await interaction.followup.send(
-        f"Setup complete. Built {created} class channels (+ roles & threads).",
+        f"Setup complete. Built {created} class channels; "
+        f"repaired {repaired} for admin access.",
         ephemeral=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# /postmenu  (admin) — (re)post the class signup menu
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="postmenu", guild=discord.Object(id=GUILD_ID),
+                  description="(Re)post the class signup menu in class-signup (admin).")
+async def postmenu(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    signup_id = await db.get_setting("signup_channel_id")
+    if not signup_id:
+        await interaction.response.send_message("Run /setup first.", ephemeral=True)
+        return
+    channel = bot.get_channel(int(signup_id))
+    if channel is None:
+        await interaction.response.send_message(
+            "Can't find the class-signup channel.", ephemeral=True
+        )
+        return
+    rows = await db.list_classes()
+    view = build_signup_view(rows)
+    bot.add_view(view)
+    msg = await channel.send(SIGNUP_TEXT, view=view)
+    await db.set_setting("signup_message_id", msg.id)
+    await interaction.response.send_message("Signup menu posted.", ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
