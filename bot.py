@@ -617,9 +617,11 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     if hub is None:
         hub = await guild.create_category(HUB_CATEGORY)
 
-    async def ensure_text_channel(name, category, can_send_everyone):
+    async def ensure_text_channel(name, category, can_send_everyone, topic=None):
         existing = discord.utils.get(guild.text_channels, name=name)
         if existing:
+            if topic and existing.topic != topic:
+                await existing.edit(topic=topic)
             return existing
         overwrites = {
             everyone: discord.PermissionOverwrite(
@@ -627,13 +629,31 @@ async def setup(interaction: discord.Interaction, force: bool = False):
             ),
             me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
-        return await guild.create_text_channel(name, category=category, overwrites=overwrites)
+        return await guild.create_text_channel(
+            name, category=category, overwrites=overwrites, topic=topic
+        )
 
-    announcements = await ensure_text_channel("general-announcements", hub, False)
-    discussion = await ensure_text_channel("general-discussion", hub, True)
-    signup = await ensure_text_channel("class-signup", hub, False)
-    points_ch = await ensure_text_channel("general-points", hub, True)
-    overview_ch = await ensure_text_channel("overview", hub, False)  # read-only
+    announcements = await ensure_text_channel(
+        "general-announcements", hub, False,
+        "📢 Weekly Olympiad overview and monthly Hero announcements. Posts by the bot only.",
+    )
+    discussion = await ensure_text_channel(
+        "general-discussion", hub, True,
+        "💬 Open chat about the Grand Olympiad for everyone.",
+    )
+    signup = await ensure_text_channel(
+        "class-signup", hub, False,
+        "🎭 Pick which class channels you want to see — grab a class from the menu to reveal it.",
+    )
+    points_ch = await ensure_text_channel(
+        "general-points", hub, True,
+        "📊 Log scores here from any class: type `Name 180` (or `Name 180 9` for matches). "
+        "New names are asked for their class and clan.",
+    )
+    overview_ch = await ensure_text_channel(
+        "overview", hub, False,
+        "🏆 Live standings: our candidates vs the leading rival in each class. Updates automatically.",
+    )
 
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
@@ -675,19 +695,25 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         # Repair an existing category so admins can see the whole thing.
         await hidden.set_permissions(admin_role, view_channel=True, send_messages=True)
 
+    def class_topic(cname):
+        return (f"⚔️ {cname} Olympiad tracking — post scores in the 📊 points thread, "
+                f"chat in 💬 discussion. Visible because you picked {cname} in #class-signup.")
+
     created = 0
     repaired = 0
     for cname in CLASSES:
         class_id = await db.upsert_class(cname)
         row = await db.get_class_by_name(cname)
         if row["channel_id"]:
-            # Already built. On a force run, repair admin visibility on it.
+            # Already built. On a force run, repair admin visibility and topic.
             if force:
                 ch = guild.get_channel(row["channel_id"])
                 if ch is not None:
                     await ch.set_permissions(
                         admin_role, view_channel=True, send_messages=True
                     )
+                    if ch.topic != class_topic(cname):
+                        await ch.edit(topic=class_topic(cname))
                     repaired += 1
             continue
 
@@ -702,7 +728,8 @@ async def setup(interaction: discord.Interaction, force: bool = False):
             me: bot_over,
         }
         channel = await guild.create_text_channel(
-            channel_name(cname), category=hidden, overwrites=overwrites
+            channel_name(cname), category=hidden, overwrites=overwrites,
+            topic=class_topic(cname),
         )
         points = await channel.create_thread(
             name="\U0001F4CA points", type=discord.ChannelType.public_thread,
@@ -729,16 +756,18 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     else:
         await staff.set_permissions(admin_role, view_channel=True, send_messages=True)
 
-    async def ensure_staff_channel(name):
+    async def ensure_staff_channel(name, topic=None):
         existing = discord.utils.get(guild.text_channels, name=name)
         if existing:
             await existing.set_permissions(everyone, view_channel=False)
             await existing.set_permissions(
                 admin_role, view_channel=True, send_messages=True
             )
+            if topic and existing.topic != topic:
+                await existing.edit(topic=topic)
             return existing
         return await guild.create_text_channel(
-            name, category=staff,
+            name, category=staff, topic=topic,
             overwrites={
                 everyone: discord.PermissionOverwrite(view_channel=False),
                 admin_role: discord.PermissionOverwrite(
@@ -748,8 +777,15 @@ async def setup(interaction: discord.Interaction, force: bool = False):
             },
         )
 
-    await ensure_staff_channel("staff-discussion")
-    candidates = await ensure_staff_channel("set-candidates")
+    await ensure_staff_channel(
+        "staff-discussion",
+        "🔒 Olympiad managers only — coordination and planning.",
+    )
+    candidates = await ensure_staff_channel(
+        "set-candidates",
+        "📝 Managers: register candidates with `ClassName: Name1, Name2` "
+        "(comma-separate for several).",
+    )
     await db.set_setting("candidates_channel_id", candidates.id)
     candidates_channel_id = candidates.id
 
