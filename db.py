@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS contestants (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL COLLATE NOCASE,
     class_id   INTEGER NOT NULL,
-    is_member  INTEGER NOT NULL DEFAULT 0,   -- 1 = our alliance, 0 = rival
+    is_member  INTEGER NOT NULL DEFAULT 0,   -- 1 = friendly (our side), 0 = rival
+    clan       TEXT,                          -- affiliation label (e.g. 'Wolfpack')
     active     INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (name, class_id),
@@ -83,6 +84,17 @@ async def init_db(path: str) -> None:
     _db = await aiosqlite.connect(path)
     _db.row_factory = aiosqlite.Row
     await _db.executescript(SCHEMA)
+    # Migration: add the 'clan' column to databases created before it existed,
+    # and backfill from the old is_member flag.
+    async with _db.execute("PRAGMA table_info(contestants)") as cur:
+        cols = [row[1] for row in await cur.fetchall()]
+    if "clan" not in cols:
+        await _db.execute("ALTER TABLE contestants ADD COLUMN clan TEXT")
+        await _db.execute(
+            "UPDATE contestants SET clan = "
+            "CASE WHEN is_member = 1 THEN 'Wolfpack' ELSE 'Rival' END "
+            "WHERE clan IS NULL"
+        )
     await _db.commit()
 
 
@@ -155,12 +167,13 @@ async def list_classes() -> list[aiosqlite.Row]:
 # ---------------------------------------------------------------------------
 # contestants
 # ---------------------------------------------------------------------------
-async def add_contestant(name: str, class_id: int, is_member: bool) -> int:
+async def add_contestant(name: str, class_id: int, is_member: bool,
+                         clan: str | None = None) -> int:
     await _db.execute(
-        "INSERT INTO contestants(name, class_id, is_member) VALUES(?, ?, ?) "
+        "INSERT INTO contestants(name, class_id, is_member, clan) VALUES(?, ?, ?, ?) "
         "ON CONFLICT(name, class_id) DO UPDATE SET active = 1, "
-        "is_member = excluded.is_member",
-        (name, class_id, 1 if is_member else 0),
+        "is_member = excluded.is_member, clan = excluded.clan",
+        (name, class_id, 1 if is_member else 0, clan),
     )
     await _db.commit()
     async with _db.execute(
@@ -214,7 +227,7 @@ async def find_contestants_by_name(name: str) -> list[aiosqlite.Row]:
     tracked in several classes.
     """
     query = """
-        SELECT c.id, c.name, c.is_member, c.class_id, cl.name AS class_name
+        SELECT c.id, c.name, c.is_member, c.clan, c.class_id, cl.name AS class_name
         FROM contestants c
         JOIN classes cl ON cl.id = c.class_id
         WHERE c.name = ? AND c.active = 1
@@ -243,7 +256,7 @@ async def standings(class_id: int, month: str) -> list[aiosqlite.Row]:
     """Latest points per active contestant in a class for the given month,
     highest first. Contestants with no reading this month are omitted."""
     query = """
-        SELECT c.id, c.name, c.is_member, s.points, s.matches, s.recorded_at
+        SELECT c.id, c.name, c.is_member, c.clan, s.points, s.matches, s.recorded_at
         FROM contestants c
         JOIN snapshots s ON s.contestant_id = c.id
         WHERE c.class_id = ? AND c.active = 1 AND s.month = ?

@@ -56,3 +56,38 @@ def channel_name(class_name: str) -> str:
     """
     safe = class_name.lower().replace("'", "").replace(" ", "-")
     return safe
+
+
+# ---------------------------------------------------------------------------
+# Affiliations (which clan a contestant belongs to).
+#
+# 'friendly' = on our alliance's side, so they count as one of "our" candidates
+# in the overview. Anything not friendly is competition (a rival we must beat).
+# To add a real clan later, just append an entry here — the buttons, overview
+# and rosters all read from this list, so nothing else needs changing.
+# ---------------------------------------------------------------------------
+OUR_CLAN = "Wolfpack"
+
+AFFILIATIONS = [
+    {"label": "Wolfpack", "emoji": "🐺", "friendly": True},
+    {"label": "Unknown",  "emoji": "❓", "friendly": True},   # allied clan, name TBD
+    {"label": "Rival",    "emoji": "⚔️", "friendly": False},
+]
+
+_CLAN_EMOJI = {a["label"]: a["emoji"] for a in AFFILIATIONS}
+_CLAN_FRIENDLY = {a["label"]: a["friendly"] for a in AFFILIATIONS}
+
+
+def clan_emoji(clan, is_member=None) -> str:
+    """Emoji for a clan label, with a fallback for legacy rows that only have
+    the old is_member flag."""
+    if clan and clan in _CLAN_EMOJI:
+        return _CLAN_EMOJI[clan]
+    if is_member is None:
+        return "❓"
+    return "🐺" if is_member else "⚔️"
+
+
+def is_friendly(clan) -> bool:
+    """Whether a clan counts as on our side (defaults to friendly if unknown)."""
+    return _CLAN_FRIENDLY.get(clan, True)

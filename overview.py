@@ -8,6 +8,8 @@ It compares a member's points against the strongest rival in the same class.
 
 import discord
 
+from classes import clan_emoji
+
 # Colours for the standing embeds.
 GREEN = 0x2ECC71
 YELLOW = 0xF1C40F
@@ -71,7 +73,7 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str) -> disc
     for i, r in enumerate(rows):
         medal = MEDALS.get(i, f"`{i + 1:>2}`")
         tag = "**" if r["is_member"] else ""
-        who = "\U0001F6E1️" if r["is_member"] else "⚔️"  # 🛡️ / ⚔️
+        who = clan_emoji(r["clan"], r["is_member"])
         matches = f"  ·  {r['matches']} matches" if r["matches"] is not None else ""
         lines.append(f"{medal} {who} {tag}{r['name']}{tag} — **{r['points']}**{matches}")
     embed.description = "\n".join(lines)
@@ -85,7 +87,7 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str) -> disc
             verdicts.append(f"{emoji} **{m['name']}** — {label}")
         embed.add_field(name="Our contestants", value="\n".join(verdicts), inline=False)
 
-    embed.set_footer(text="🛡️ member  ·  ⚔️ rival")
+    embed.set_footer(text="🐺 Wolfpack · ❓ ally · ⚔️ rival")
     return embed
 
 
@@ -152,21 +154,23 @@ async def build_live_overview(db, month: str, margin: int):
         rows = await db.standings(cl["id"], month)          # sorted high → low
         pts_by_id = {r["id"]: r["points"] for r in rows}
         rivals = [r for r in rows if not r["is_member"]]
-        top = (rivals[0]["name"], rivals[0]["points"]) if rivals else None
+        top = rivals[0] if rivals else None
+        rtag = f"{clan_emoji(top['clan'], False)} {top['name']}" if top else None
 
         lines = [f"**{cl['name']}**"]
         for c in candidates:
+            tag = clan_emoji(c["clan"], c["is_member"])
             pts = pts_by_id.get(c["id"])
             if pts is None:
-                lines.append(f"{W} {c['name']} — no score yet")
+                lines.append(f"{W} {tag} {c['name']} — no score yet")
             elif top is None:
-                lines.append(f"{G} {c['name']} — {pts} (leading, no rival)")
+                lines.append(f"{G} {tag} {c['name']} — {pts} (leading, no rival)")
             else:
-                gap = pts - top[1]
+                gap = pts - top["points"]
                 emoji = G if gap > margin else (R if gap < -margin else Y)
                 sign = f"+{gap}" if gap >= 0 else str(gap)
                 lines.append(
-                    f"{emoji} {c['name']} — {pts} vs {top[0]} {top[1]} ({sign})"
+                    f"{emoji} {tag} {c['name']} — {pts} vs {rtag} {top['points']} ({sign})"
                 )
         blocks.append("\n".join(lines))
 

@@ -28,7 +28,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import db
-from classes import CLASSES, channel_name
+from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
 from overview import post_overview, build_standing_embed, build_live_overview
 from parser import parse_score
 
@@ -98,9 +98,22 @@ async def class_autocomplete(interaction: discord.Interaction, current: str):
 
 
 # ---------------------------------------------------------------------------
-# UI: Member / Rival prompt for a newly seen name
+# UI: affiliation prompt for a newly seen name (Wolfpack / Unknown / Rival …)
 # ---------------------------------------------------------------------------
+def _affiliation_button(aff):
+    """Build a button for one affiliation (friendly ones green/grey, rivals red)."""
+    if not aff["friendly"]:
+        style = discord.ButtonStyle.danger
+    elif aff["label"] == OUR_CLAN:
+        style = discord.ButtonStyle.success
+    else:
+        style = discord.ButtonStyle.secondary
+    return discord.ui.Button(label=aff["label"], emoji=aff["emoji"], style=style)
+
+
 class NewContestantView(discord.ui.View):
+    """Prompt for a new name in a class points thread: one button per clan."""
+
     def __init__(self, name, class_id, points, matches, month):
         super().__init__(timeout=300)
         self.name = name
@@ -108,25 +121,26 @@ class NewContestantView(discord.ui.View):
         self.points = points
         self.matches = matches
         self.month = month
+        for aff in AFFILIATIONS:
+            btn = _affiliation_button(aff)
+            btn.callback = self._make_cb(aff["label"], aff["friendly"])
+            self.add_item(btn)
 
-    async def _save(self, interaction: discord.Interaction, is_member: bool):
-        cid = await db.add_contestant(self.name, self.class_id, is_member)
+    def _make_cb(self, clan, friendly):
+        async def cb(interaction):
+            await self._save(interaction, clan, friendly)
+        return cb
+
+    async def _save(self, interaction: discord.Interaction, clan: str, friendly: bool):
+        cid = await db.add_contestant(self.name, self.class_id, friendly, clan)
         await db.add_snapshot(cid, self.points, self.month, self.matches, source="chat")
-        kind = "member \U0001F6E1️" if is_member else "rival ⚔️"
         await interaction.response.edit_message(
-            content=f"Added **{self.name}** as {kind} with **{self.points}** points.",
+            content=f"Added **{self.name}** as {clan_emoji(clan)} {clan} — "
+                    f"**{self.points}** points.",
             view=None,
         )
         self.stop()
         await refresh_overview()
-
-    @discord.ui.button(label="Member", style=discord.ButtonStyle.success, emoji="\U0001F6E1️")
-    async def member(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._save(interaction, True)
-
-    @discord.ui.button(label="Rival", style=discord.ButtonStyle.danger, emoji="⚔️")
-    async def rival(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._save(interaction, False)
 
 
 # ---------------------------------------------------------------------------
@@ -230,13 +244,13 @@ class ClassPickSelect(discord.ui.Select):
         ).label
         await interaction.response.send_message(
             f"Class set to **{self.view.selected_class_name}**. "
-            "Now click Member or Rival.", ephemeral=True,
+            "Now choose the clan.", ephemeral=True,
         )
 
 
 class NewContestantGeneralView(discord.ui.View):
     """Prompt for a new name posted in the general points channel: pick a class
-    from the dropdown(s), then press Member or Rival to save."""
+    from the dropdown(s), then choose the clan to save."""
 
     def __init__(self, name, points, matches, month, class_rows):
         super().__init__(timeout=300)
@@ -250,34 +264,28 @@ class NewContestantGeneralView(discord.ui.View):
         for chunk, letters in alpha_chunks(class_rows):
             self.add_item(ClassPickSelect(chunk, letters))
 
-        member = discord.ui.Button(
-            label="Member", style=discord.ButtonStyle.success, emoji="\U0001F6E1️"
-        )
-        rival = discord.ui.Button(
-            label="Rival", style=discord.ButtonStyle.danger, emoji="⚔️"
-        )
-        member.callback = self._member
-        rival.callback = self._rival
-        self.add_item(member)
-        self.add_item(rival)
+        for aff in AFFILIATIONS:
+            btn = _affiliation_button(aff)
+            btn.callback = self._make_cb(aff["label"], aff["friendly"])
+            self.add_item(btn)
 
-    async def _member(self, interaction):
-        await self._save(interaction, True)
+    def _make_cb(self, clan, friendly):
+        async def cb(interaction):
+            await self._save(interaction, clan, friendly)
+        return cb
 
-    async def _rival(self, interaction):
-        await self._save(interaction, False)
-
-    async def _save(self, interaction: discord.Interaction, is_member: bool):
+    async def _save(self, interaction: discord.Interaction, clan: str, friendly: bool):
         if self.selected_class_id is None:
             await interaction.response.send_message(
                 "Pick a class from the menu first.", ephemeral=True
             )
             return
-        cid = await db.add_contestant(self.name, self.selected_class_id, is_member)
+        cid = await db.add_contestant(
+            self.name, self.selected_class_id, friendly, clan
+        )
         await db.add_snapshot(cid, self.points, self.month, self.matches, source="chat")
-        kind = "member \U0001F6E1️" if is_member else "rival ⚔️"
         await interaction.response.edit_message(
-            content=f"Added **{self.name}** as {kind} in "
+            content=f"Added **{self.name}** as {clan_emoji(clan)} {clan} in "
                     f"**{self.selected_class_name}** — **{self.points}** points.",
             view=None,
         )
@@ -383,9 +391,10 @@ async def handle_set_candidates(message: discord.Message):
         await message.reply("Give at least one name, e.g. `Duelist: Name1, Name2`.")
         return
     for n in names:
-        await db.add_contestant(n, cls["id"], is_member=True)
+        await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
     await message.reply(
-        f"Set {len(names)} candidate(s) for **{cls['name']}**: {', '.join(names)}"
+        f"Set {len(names)} {OUR_CLAN} candidate(s) for **{cls['name']}**: "
+        f"{', '.join(names)}"
     )
     await refresh_overview()
 
@@ -812,11 +821,13 @@ async def roster(interaction: discord.Interaction, class_name: str):
             f"No contestants tracked in **{class_name}** yet.", ephemeral=True
         )
         return
-    members = [p["name"] for p in people if p["is_member"]]
-    rivals = [p["name"] for p in people if not p["is_member"]]
+    ours = [f"{clan_emoji(p['clan'], p['is_member'])} {p['name']}"
+            for p in people if p["is_member"]]
+    rivals = [f"{clan_emoji(p['clan'], p['is_member'])} {p['name']}"
+              for p in people if not p["is_member"]]
     embed = discord.Embed(title=f"{class_name} — Roster", colour=0x3498DB)
-    embed.add_field(name="🛡️ Members", value="\n".join(members) or "—", inline=True)
-    embed.add_field(name="⚔️ Rivals", value="\n".join(rivals) or "—", inline=True)
+    embed.add_field(name="Our side", value="\n".join(ours) or "—", inline=True)
+    embed.add_field(name="Rivals", value="\n".join(rivals) or "—", inline=True)
     await interaction.response.send_message(embed=embed)
 
 
