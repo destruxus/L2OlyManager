@@ -148,18 +148,29 @@ class NewContestantView(discord.ui.View):
 # ---------------------------------------------------------------------------
 def alpha_chunks(class_rows, max_size: int = 25):
     """Sort classes A→Z and split into balanced groups of at most `max_size`,
-    each tagged with its starting-letter range (e.g. 'A–H'). Splitting by
-    alphabet — rather than list order — makes which dropdown holds what obvious."""
+    each tagged with its starting-letter range (e.g. 'A–H'). Splits are nudged
+    to a letter boundary so the same starting letter never appears in two
+    dropdowns — the labels stay unambiguous."""
     rows = sorted(class_rows, key=lambda r: r["name"].lower())
     n = len(rows)
     num = max(1, (n + max_size - 1) // max_size)
-    size = (n + num - 1) // num
-    out = []
-    for i in range(0, n, size):
-        part = rows[i:i + size]
+    target = (n + num - 1) // num
+
+    def letter(r):
+        return r["name"][0].lower()
+
+    out, i = [], 0
+    while i < n:
+        end = min(i + target, n)
+        # Don't cut in the middle of a starting-letter group (unless we'd
+        # exceed max_size).
+        while end < n and letter(rows[end]) == letter(rows[end - 1]) and (end - i) < max_size:
+            end += 1
+        part = rows[i:end]
         a = part[0]["name"][0].upper()
         z = part[-1]["name"][0].upper()
         out.append((part, a if a == z else f"{a}–{z}"))
+        i = end
     return out
 
 

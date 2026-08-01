@@ -33,6 +33,7 @@ CLASSES = [
     "Shilien Templar",
     "Spectral Dancer",
     "Ghost Hunter",
+    "Ghost Sentinel",
     "Spectral Master",
     "Storm Screamer",
     "Titan",
