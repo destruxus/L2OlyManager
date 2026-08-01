@@ -220,6 +220,26 @@ SIGNUP_TEXT = (
 )
 
 
+async def ensure_signup_menu(channel):
+    """Make sure the signup menu message is actually present in `channel`.
+    Re-registers the handler if it exists; reposts it if it was deleted."""
+    rows = await db.list_classes()
+    view = build_signup_view(rows)
+    mid = await db.get_setting("signup_message_id")
+    if mid:
+        try:
+            await channel.fetch_message(int(mid))
+            bot.add_view(view)      # still there — just rebind the handler
+            return
+        except discord.NotFound:
+            pass                    # was deleted — repost below
+        except discord.HTTPException:
+            return
+    bot.add_view(view)
+    msg = await channel.send(SIGNUP_TEXT, view=view)
+    await db.set_setting("signup_message_id", msg.id)
+
+
 # ---------------------------------------------------------------------------
 # UI: general points channel — class is NOT known from the channel, so a new
 # name needs both a class AND member/rival before it can be saved.
@@ -731,13 +751,8 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         )
         await db.set_setting("candidates_intro_posted", "1")
 
-    # ---- Signup menu (posted once; use /postmenu to repost) ----
-    if not await db.get_setting("signup_message_id"):
-        rows = await db.list_classes()
-        view = build_signup_view(rows)
-        bot.add_view(view)
-        msg = await signup.send(SIGNUP_TEXT, view=view)
-        await db.set_setting("signup_message_id", msg.id)
+    # ---- Signup menu: verify it's present, repost if it was deleted ----
+    await ensure_signup_menu(signup)
 
     await db.set_setting("current_month", month_label())
     await db.set_setting("setup_done", "1")
