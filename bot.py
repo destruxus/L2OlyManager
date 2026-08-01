@@ -29,7 +29,7 @@ from discord.ext import commands, tasks
 
 import db
 from classes import CLASSES, channel_name
-from overview import post_overview, build_standing_embed
+from overview import post_overview, build_standing_embed, build_live_overview
 from parser import parse_score
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Channel ids loaded from settings on startup and set during /setup.
 general_points_id: int | None = None   # shared "general-points" channel
 candidates_channel_id: int | None = None  # manager-only "set-candidates" channel
+overview_channel_id: int | None = None    # read-only "overview" channel
+overview_message_id: int | None = None    # the single live-edited overview message
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +118,7 @@ class NewContestantView(discord.ui.View):
             view=None,
         )
         self.stop()
+        await refresh_overview()
 
     @discord.ui.button(label="Member", style=discord.ButtonStyle.success, emoji="\U0001F6E1️")
     async def member(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -279,6 +282,7 @@ class NewContestantGeneralView(discord.ui.View):
             view=None,
         )
         self.stop()
+        await refresh_overview()
 
 
 class ClassUpdateSelect(discord.ui.Select):
@@ -303,6 +307,7 @@ class ClassUpdateSelect(discord.ui.Select):
             content=f"Updated **{v.name}** in **{cname}** → **{v.points}**.", view=None
         )
         v.stop()
+        await refresh_overview()
 
 
 class PickClassUpdateView(discord.ui.View):
@@ -330,6 +335,7 @@ async def handle_general_points(message: discord.Message):
             await message.add_reaction("✅")
         except discord.HTTPException:
             pass
+        await refresh_overview()
     elif len(found) == 0:
         class_rows = await db.list_classes()
         view = NewContestantGeneralView(name, points, matches, month, class_rows)
@@ -381,6 +387,33 @@ async def handle_set_candidates(message: discord.Message):
     await message.reply(
         f"Set {len(names)} candidate(s) for **{cls['name']}**: {', '.join(names)}"
     )
+    await refresh_overview()
+
+
+async def refresh_overview():
+    """Rebuild and edit the single live overview message. Called after every
+    score/candidate change so the overview channel stays current."""
+    global overview_message_id
+    if not overview_channel_id:
+        return
+    channel = bot.get_channel(overview_channel_id)
+    if channel is None:
+        return
+    embeds = await build_live_overview(db, await get_month(), MARGIN)
+    if overview_message_id:
+        try:
+            await channel.get_partial_message(overview_message_id).edit(embeds=embeds)
+            return
+        except discord.NotFound:
+            pass  # message was deleted — fall through and post a fresh one
+        except discord.HTTPException:
+            return
+    try:
+        msg = await channel.send(embeds=embeds)
+    except discord.HTTPException:
+        return
+    overview_message_id = msg.id
+    await db.set_setting("overview_message_id", msg.id)
 
 
 # ---------------------------------------------------------------------------
@@ -391,10 +424,15 @@ async def on_ready():
     await db.init_db(DB_PATH)
     # Remember the special channels across restarts.
     global general_points_id, candidates_channel_id
+    global overview_channel_id, overview_message_id
     gp = await db.get_setting("points_channel_id")
     general_points_id = int(gp) if gp else None
     cc = await db.get_setting("candidates_channel_id")
     candidates_channel_id = int(cc) if cc else None
+    ov = await db.get_setting("overview_channel_id")
+    overview_channel_id = int(ov) if ov else None
+    om = await db.get_setting("overview_message_id")
+    overview_message_id = int(om) if om else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
@@ -402,6 +440,7 @@ async def on_ready():
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     if not scheduler.is_running():
         scheduler.start()
+    await refresh_overview()  # keep the live overview current after a restart
     print(f"Logged in as {bot.user} — ready.")
 
 
@@ -435,6 +474,7 @@ async def on_message(message: discord.Message):
             await message.add_reaction("✅")
         except discord.HTTPException:
             pass
+        await refresh_overview()
     else:
         view = NewContestantView(name, cls["id"], points, matches, month)
         await message.reply(
@@ -553,13 +593,16 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     discussion = await ensure_text_channel("general-discussion", hub, True)
     signup = await ensure_text_channel("class-signup", hub, False)
     points_ch = await ensure_text_channel("general-points", hub, True)
+    overview_ch = await ensure_text_channel("overview", hub, False)  # read-only
 
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
     await db.set_setting("points_channel_id", points_ch.id)
-    global general_points_id, candidates_channel_id
+    await db.set_setting("overview_channel_id", overview_ch.id)
+    global general_points_id, candidates_channel_id, overview_channel_id
     general_points_id = points_ch.id
+    overview_channel_id = overview_ch.id
 
     if not await db.get_setting("points_intro_posted"):
         await points_ch.send(
@@ -689,6 +732,7 @@ async def setup(interaction: discord.Interaction, force: bool = False):
 
     await db.set_setting("current_month", month_label())
     await db.set_setting("setup_done", "1")
+    await refresh_overview()  # post the initial live overview
     await interaction.followup.send(
         f"Setup complete. Built {created} class channels; "
         f"repaired {repaired} for admin access.",

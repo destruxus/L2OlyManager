@@ -135,3 +135,65 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
                 await channel.send(embed=embed)
             except discord.HTTPException:
                 pass
+
+
+async def build_live_overview(db, month: str, margin: int):
+    """Build the live overview embeds: every class where we field candidates,
+    each candidate, and how far ahead/behind they are versus the leading
+    competitor (the top-ranked rival) in that class."""
+    G, Y, R, W = "\U0001F7E2", "\U0001F7E1", "\U0001F534", "\U000026AA"
+    classes = await db.list_classes()
+    blocks = []
+    for cl in classes:
+        people = await db.list_contestants(cl["id"])
+        candidates = [p for p in people if p["is_member"]]
+        if not candidates:
+            continue
+        rows = await db.standings(cl["id"], month)          # sorted high → low
+        pts_by_id = {r["id"]: r["points"] for r in rows}
+        rivals = [r for r in rows if not r["is_member"]]
+        top = (rivals[0]["name"], rivals[0]["points"]) if rivals else None
+
+        lines = [f"**{cl['name']}**"]
+        for c in candidates:
+            pts = pts_by_id.get(c["id"])
+            if pts is None:
+                lines.append(f"{W} {c['name']} — no score yet")
+            elif top is None:
+                lines.append(f"{G} {c['name']} — {pts} (leading, no rival)")
+            else:
+                gap = pts - top[1]
+                emoji = G if gap > margin else (R if gap < -margin else Y)
+                sign = f"+{gap}" if gap >= 0 else str(gap)
+                lines.append(
+                    f"{emoji} {c['name']} — {pts} vs {top[0]} {top[1]} ({sign})"
+                )
+        blocks.append("\n".join(lines))
+
+    title = f"Live Olympiad Overview — {month}"
+    if not blocks:
+        return [discord.Embed(
+            title=title, colour=0x3498DB,
+            description="No candidates set yet — add them in #set-candidates.",
+        )]
+
+    # Pack class blocks into embeds under the 4096-char description limit.
+    chunks, cur = [], ""
+    for b in blocks:
+        if cur and len(cur) + len(b) + 2 > 3800:
+            chunks.append(cur)
+            cur = ""
+        cur += ("\n\n" if cur else "") + b
+    if cur:
+        chunks.append(cur)
+
+    embeds = []
+    for i, ch in enumerate(chunks):
+        e = discord.Embed(description=ch, colour=0x3498DB)
+        if i == 0:
+            e.title = title
+        embeds.append(e)
+    embeds[-1].set_footer(
+        text="🟢 ahead · 🟡 close · 🔴 behind · ⚪ no score — updates live"
+    )
+    return embeds
