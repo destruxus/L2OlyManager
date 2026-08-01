@@ -49,14 +49,15 @@ DB_PATH = os.path.join(HERE, CONFIG.get("database_path", "olympiad.db"))
 
 HIDDEN_CATEGORY = "Grand Olympiad"
 HUB_CATEGORY = "Olympiad Hub"
+STAFF_CATEGORY = "Olympiad Staff"  # manager-only, hidden from everyone else
 
 intents = discord.Intents.default()
 intents.message_content = True  # REQUIRED to read "Name 180" posts.
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Channel id of the shared "general-points" channel (class not implied there).
-# Loaded from settings on startup and set during /setup.
-general_points_id: int | None = None
+# Channel ids loaded from settings on startup and set during /setup.
+general_points_id: int | None = None   # shared "general-points" channel
+candidates_channel_id: int | None = None  # manager-only "set-candidates" channel
 
 
 # ---------------------------------------------------------------------------
@@ -343,16 +344,57 @@ async def handle_general_points(message: discord.Message):
         )
 
 
+def _norm(s: str) -> str:
+    """Normalise a class name for tolerant matching (case/space/punctuation)."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+async def resolve_class(text: str):
+    """Match free-typed text to a class row, ignoring case/spaces/apostrophes."""
+    target = _norm(text)
+    for row in await db.list_classes():
+        if _norm(row["name"]) == target:
+            return row
+    return None
+
+
+async def handle_set_candidates(message: discord.Message):
+    """Manager posts 'ClassName: Name1, Name2, …' to register candidates
+    (members) for a class in one go."""
+    content = message.content.strip()
+    if ":" not in content:
+        return  # not a candidate line — ignore staff chatter
+    cls_part, names_part = content.split(":", 1)
+    cls = await resolve_class(cls_part.strip())
+    if cls is None:
+        await message.reply(
+            f"Unknown class: **{cls_part.strip()}**. "
+            "Format: `Duelist: Name1, Name2`."
+        )
+        return
+    names = [n.strip() for n in names_part.split(",") if n.strip()]
+    if not names:
+        await message.reply("Give at least one name, e.g. `Duelist: Name1, Name2`.")
+        return
+    for n in names:
+        await db.add_contestant(n, cls["id"], is_member=True)
+    await message.reply(
+        f"Set {len(names)} candidate(s) for **{cls['name']}**: {', '.join(names)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_ready():
     await db.init_db(DB_PATH)
-    # Remember the general points channel across restarts.
-    global general_points_id
+    # Remember the special channels across restarts.
+    global general_points_id, candidates_channel_id
     gp = await db.get_setting("points_channel_id")
     general_points_id = int(gp) if gp else None
+    cc = await db.get_setting("candidates_channel_id")
+    candidates_channel_id = int(cc) if cc else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
@@ -366,6 +408,10 @@ async def on_ready():
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
+        return
+    # Manager-only candidate channel (hidden, so only staff can post here).
+    if candidates_channel_id and message.channel.id == candidates_channel_id:
+        await handle_set_candidates(message)
         return
     # General points channel: class is not implied, so unknown names are asked
     # for both class and member/rival.
@@ -512,7 +558,7 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
     await db.set_setting("points_channel_id", points_ch.id)
-    global general_points_id
+    global general_points_id, candidates_channel_id
     general_points_id = points_ch.id
 
     if not await db.get_setting("points_intro_posted"):
@@ -585,6 +631,53 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         )
         await db.set_class_discord_ids(class_id, channel.id, points.id, talk.id, role.id)
         created += 1
+
+    # ---- Manager-only staff area (hidden from everyone but the admin role) ----
+    staff = discord.utils.get(guild.categories, name=STAFF_CATEGORY)
+    if staff is None:
+        staff = await guild.create_category(
+            STAFF_CATEGORY,
+            overwrites={
+                everyone: discord.PermissionOverwrite(view_channel=False),
+                admin_role: admin_over,
+                me: bot_over,
+            },
+        )
+    else:
+        await staff.set_permissions(admin_role, view_channel=True, send_messages=True)
+
+    async def ensure_staff_channel(name):
+        existing = discord.utils.get(guild.text_channels, name=name)
+        if existing:
+            await existing.set_permissions(everyone, view_channel=False)
+            await existing.set_permissions(
+                admin_role, view_channel=True, send_messages=True
+            )
+            return existing
+        return await guild.create_text_channel(
+            name, category=staff,
+            overwrites={
+                everyone: discord.PermissionOverwrite(view_channel=False),
+                admin_role: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True
+                ),
+                me: bot_over,
+            },
+        )
+
+    await ensure_staff_channel("staff-discussion")
+    candidates = await ensure_staff_channel("set-candidates")
+    await db.set_setting("candidates_channel_id", candidates.id)
+    candidates_channel_id = candidates.id
+
+    if not await db.get_setting("candidates_intro_posted"):
+        await candidates.send(
+            "**Set candidates** (managers only).\n"
+            "Post `ClassName: Name1, Name2, …` to register candidates for a class "
+            "— comma-separate to add several at once. Example: "
+            "`Duelist: Alice, Bob, Carol`. They're added as members of that class."
+        )
+        await db.set_setting("candidates_intro_posted", "1")
 
     # ---- Signup menu (posted once; use /postmenu to repost) ----
     if not await db.get_setting("signup_message_id"):

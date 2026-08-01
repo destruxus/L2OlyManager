@@ -158,7 +158,8 @@ async def list_classes() -> list[aiosqlite.Row]:
 async def add_contestant(name: str, class_id: int, is_member: bool) -> int:
     await _db.execute(
         "INSERT INTO contestants(name, class_id, is_member) VALUES(?, ?, ?) "
-        "ON CONFLICT(name, class_id) DO UPDATE SET active = 1",
+        "ON CONFLICT(name, class_id) DO UPDATE SET active = 1, "
+        "is_member = excluded.is_member",
         (name, class_id, 1 if is_member else 0),
     )
     await _db.commit()
