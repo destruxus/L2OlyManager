@@ -128,17 +128,35 @@ class NewContestantView(discord.ui.View):
 # ---------------------------------------------------------------------------
 # UI: class signup menu (persistent)
 # ---------------------------------------------------------------------------
-class SignupSelect(discord.ui.Select):
-    """One dropdown covering up to 25 classes. Selecting sets your subscriptions
-    for the classes in THIS dropdown (unselected ones here get removed)."""
+def alpha_chunks(class_rows, max_size: int = 25):
+    """Sort classes A→Z and split into balanced groups of at most `max_size`,
+    each tagged with its starting-letter range (e.g. 'A–H'). Splitting by
+    alphabet — rather than list order — makes which dropdown holds what obvious."""
+    rows = sorted(class_rows, key=lambda r: r["name"].lower())
+    n = len(rows)
+    num = max(1, (n + max_size - 1) // max_size)
+    size = (n + num - 1) // num
+    out = []
+    for i in range(0, n, size):
+        part = rows[i:i + size]
+        a = part[0]["name"][0].upper()
+        z = part[-1]["name"][0].upper()
+        out.append((part, a if a == z else f"{a}–{z}"))
+    return out
 
-    def __init__(self, chunk_index: int, class_rows):
+
+class SignupSelect(discord.ui.Select):
+    """One dropdown covering one alphabetical group of classes. Selecting sets
+    your subscriptions for the classes in THIS dropdown (unselected ones here
+    get removed)."""
+
+    def __init__(self, chunk_index: int, class_rows, letters: str):
         options = [
             discord.SelectOption(label=row["name"], value=str(row["role_id"]))
             for row in class_rows
         ]
         super().__init__(
-            placeholder="Pick the classes you want to follow…",
+            placeholder=f"Classes {letters} — pick the ones you want",
             min_values=0,
             max_values=len(options),
             options=options,
@@ -168,11 +186,10 @@ class SignupSelect(discord.ui.Select):
 
 
 def build_signup_view(class_rows) -> discord.ui.View:
-    """A persistent view holding one dropdown per 25 classes."""
+    """A persistent view holding one dropdown per alphabetical group."""
     view = discord.ui.View(timeout=None)
-    chunks = [class_rows[i:i + 25] for i in range(0, len(class_rows), 25)]
-    for i, chunk in enumerate(chunks):
-        view.add_item(SignupSelect(i, chunk))
+    for i, (chunk, letters) in enumerate(alpha_chunks(class_rows)):
+        view.add_item(SignupSelect(i, chunk, letters))
     return view
 
 
@@ -190,15 +207,16 @@ SIGNUP_TEXT = (
 # name needs both a class AND member/rival before it can be saved.
 # ---------------------------------------------------------------------------
 class ClassPickSelect(discord.ui.Select):
-    """One dropdown of up to 25 classes; remembers the pick on its parent view."""
+    """One alphabetical group of classes; remembers the pick on its parent view."""
 
-    def __init__(self, class_rows):
+    def __init__(self, class_rows, letters: str):
         options = [
             discord.SelectOption(label=r["name"], value=str(r["id"]))
             for r in class_rows
         ]
         super().__init__(
-            placeholder="Pick the class…", min_values=0, max_values=1, options=options
+            placeholder=f"Class ({letters})…", min_values=0, max_values=1,
+            options=options,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -225,8 +243,8 @@ class NewContestantGeneralView(discord.ui.View):
         self.selected_class_id = None
         self.selected_class_name = None
 
-        for i in range(0, len(class_rows), 25):
-            self.add_item(ClassPickSelect(class_rows[i:i + 25]))
+        for chunk, letters in alpha_chunks(class_rows):
+            self.add_item(ClassPickSelect(chunk, letters))
 
         member = discord.ui.Button(
             label="Member", style=discord.ButtonStyle.success, emoji="\U0001F6E1️"
