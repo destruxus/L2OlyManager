@@ -54,6 +54,10 @@ intents = discord.Intents.default()
 intents.message_content = True  # REQUIRED to read "Name 180" posts.
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Channel id of the shared "general-points" channel (class not implied there).
+# Loaded from settings on startup and set during /setup.
+general_points_id: int | None = None
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -182,11 +186,155 @@ SIGNUP_TEXT = (
 
 
 # ---------------------------------------------------------------------------
+# UI: general points channel — class is NOT known from the channel, so a new
+# name needs both a class AND member/rival before it can be saved.
+# ---------------------------------------------------------------------------
+class ClassPickSelect(discord.ui.Select):
+    """One dropdown of up to 25 classes; remembers the pick on its parent view."""
+
+    def __init__(self, class_rows):
+        options = [
+            discord.SelectOption(label=r["name"], value=str(r["id"]))
+            for r in class_rows
+        ]
+        super().__init__(
+            placeholder="Pick the class…", min_values=0, max_values=1, options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_class_id = int(self.values[0])
+        self.view.selected_class_name = discord.utils.get(
+            self.options, value=self.values[0]
+        ).label
+        await interaction.response.send_message(
+            f"Class set to **{self.view.selected_class_name}**. "
+            "Now click Member or Rival.", ephemeral=True,
+        )
+
+
+class NewContestantGeneralView(discord.ui.View):
+    """Prompt for a new name posted in the general points channel: pick a class
+    from the dropdown(s), then press Member or Rival to save."""
+
+    def __init__(self, name, points, matches, month, class_rows):
+        super().__init__(timeout=300)
+        self.name = name
+        self.points = points
+        self.matches = matches
+        self.month = month
+        self.selected_class_id = None
+        self.selected_class_name = None
+
+        for i in range(0, len(class_rows), 25):
+            self.add_item(ClassPickSelect(class_rows[i:i + 25]))
+
+        member = discord.ui.Button(
+            label="Member", style=discord.ButtonStyle.success, emoji="\U0001F6E1️"
+        )
+        rival = discord.ui.Button(
+            label="Rival", style=discord.ButtonStyle.danger, emoji="⚔️"
+        )
+        member.callback = self._member
+        rival.callback = self._rival
+        self.add_item(member)
+        self.add_item(rival)
+
+    async def _member(self, interaction):
+        await self._save(interaction, True)
+
+    async def _rival(self, interaction):
+        await self._save(interaction, False)
+
+    async def _save(self, interaction: discord.Interaction, is_member: bool):
+        if self.selected_class_id is None:
+            await interaction.response.send_message(
+                "Pick a class from the menu first.", ephemeral=True
+            )
+            return
+        cid = await db.add_contestant(self.name, self.selected_class_id, is_member)
+        await db.add_snapshot(cid, self.points, self.month, self.matches, source="chat")
+        kind = "member \U0001F6E1️" if is_member else "rival ⚔️"
+        await interaction.response.edit_message(
+            content=f"Added **{self.name}** as {kind} in "
+                    f"**{self.selected_class_name}** — **{self.points}** points.",
+            view=None,
+        )
+        self.stop()
+
+
+class ClassUpdateSelect(discord.ui.Select):
+    """Disambiguation dropdown when a name exists in more than one class."""
+
+    def __init__(self, rows):
+        options = [
+            discord.SelectOption(label=r["class_name"], value=str(r["id"]))
+            for r in rows
+        ]
+        super().__init__(
+            placeholder="Which class to update?", min_values=1, max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        v = self.view
+        cid = int(self.values[0])
+        cname = discord.utils.get(self.options, value=self.values[0]).label
+        await db.add_snapshot(cid, v.points, v.month, v.matches, source="chat")
+        await interaction.response.edit_message(
+            content=f"Updated **{v.name}** in **{cname}** → **{v.points}**.", view=None
+        )
+        v.stop()
+
+
+class PickClassUpdateView(discord.ui.View):
+    def __init__(self, name, points, matches, month, rows):
+        super().__init__(timeout=300)
+        self.name = name
+        self.points = points
+        self.matches = matches
+        self.month = month
+        self.add_item(ClassUpdateSelect(rows))
+
+
+async def handle_general_points(message: discord.Message):
+    """Score posted in the general points channel (class unknown)."""
+    parsed = parse_score(message.content)
+    if parsed is None:
+        return
+    name, points, matches = parsed
+    month = await get_month()
+    found = await db.find_contestants_by_name(name)
+
+    if len(found) == 1:
+        await db.add_snapshot(found[0]["id"], points, month, matches, source="chat")
+        try:
+            await message.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+    elif len(found) == 0:
+        class_rows = await db.list_classes()
+        view = NewContestantGeneralView(name, points, matches, month, class_rows)
+        await message.reply(
+            f"**{name}** is new — pick the class, then Member or Rival:", view=view
+        )
+    else:
+        view = PickClassUpdateView(name, points, matches, month, found)
+        await message.reply(
+            f"**{name}** is tracked in multiple classes — which one to update?",
+            view=view,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 @bot.event
 async def on_ready():
     await db.init_db(DB_PATH)
+    # Remember the general points channel across restarts.
+    global general_points_id
+    gp = await db.get_setting("points_channel_id")
+    general_points_id = int(gp) if gp else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
@@ -201,7 +349,12 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
-    # Only act inside a class's points thread.
+    # General points channel: class is not implied, so unknown names are asked
+    # for both class and member/rival.
+    if general_points_id and message.channel.id == general_points_id:
+        await handle_general_points(message)
+        return
+    # Otherwise only act inside a class's points thread (class implied).
     cls = await db.get_class_by_points_thread(message.channel.id)
     if cls is None:
         return
@@ -335,10 +488,23 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     announcements = await ensure_text_channel("general-announcements", hub, False)
     discussion = await ensure_text_channel("general-discussion", hub, True)
     signup = await ensure_text_channel("class-signup", hub, False)
+    points_ch = await ensure_text_channel("general-points", hub, True)
 
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
+    await db.set_setting("points_channel_id", points_ch.id)
+    global general_points_id
+    general_points_id = points_ch.id
+
+    if not await db.get_setting("points_intro_posted"):
+        await points_ch.send(
+            "**General points** — anyone can log scores here.\n"
+            "Post `Name 180` (or `Name 180 9` to include matches). If the name is "
+            "new, I'll ask which class it is and whether they're a member or rival. "
+            "Known names are updated automatically."
+        )
+        await db.set_setting("points_intro_posted", "1")
 
     # ---- Hidden category for class channels ----
     # @everyone sees nothing here; the admin role sees every class; each class

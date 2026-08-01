@@ -205,6 +205,24 @@ async def list_contestants(class_id: int) -> list[aiosqlite.Row]:
         return await cur.fetchall()
 
 
+async def find_contestants_by_name(name: str) -> list[aiosqlite.Row]:
+    """Find a tracked contestant by name across ALL classes.
+
+    Used by the general points channel, where the class isn't known from the
+    channel. Normally returns 0 or 1 row; more than 1 only if the same name is
+    tracked in several classes.
+    """
+    query = """
+        SELECT c.id, c.name, c.is_member, c.class_id, cl.name AS class_name
+        FROM contestants c
+        JOIN classes cl ON cl.id = c.class_id
+        WHERE c.name = ? AND c.active = 1
+        ORDER BY cl.id
+    """
+    async with _db.execute(query, (name,)) as cur:
+        return await cur.fetchall()
+
+
 # ---------------------------------------------------------------------------
 # snapshots (scores)
 # ---------------------------------------------------------------------------
