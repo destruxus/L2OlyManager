@@ -43,9 +43,10 @@ CREATE TABLE IF NOT EXISTS contestants (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL COLLATE NOCASE,
     class_id   INTEGER NOT NULL,
-    is_member  INTEGER NOT NULL DEFAULT 0,   -- 1 = friendly (our side), 0 = rival
-    clan       TEXT,                          -- affiliation label (e.g. 'Wolfpack')
-    active     INTEGER NOT NULL DEFAULT 1,
+    is_member    INTEGER NOT NULL DEFAULT 0, -- 1 = friendly (our side), 0 = rival
+    clan         TEXT,                        -- affiliation label (e.g. 'Wolfpack')
+    is_candidate INTEGER NOT NULL DEFAULT 0,  -- 1 = the person we back for Hero
+    active       INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (name, class_id),
     FOREIGN KEY (class_id) REFERENCES classes(id)
@@ -94,6 +95,10 @@ async def init_db(path: str) -> None:
             "UPDATE contestants SET clan = "
             "CASE WHEN is_member = 1 THEN 'Wolfpack' ELSE 'Rival' END "
             "WHERE clan IS NULL"
+        )
+    if "is_candidate" not in cols:
+        await _db.execute(
+            "ALTER TABLE contestants ADD COLUMN is_candidate INTEGER NOT NULL DEFAULT 0"
         )
     await _db.commit()
 
@@ -210,6 +215,17 @@ async def remove_contestant(name: str, class_id: int) -> bool:
     return cur.rowcount > 0
 
 
+async def mark_candidate(name: str, class_id: int, value: bool = True) -> bool:
+    """Flag/unflag a contestant as the Hero candidate for their class."""
+    cur = await _db.execute(
+        "UPDATE contestants SET is_candidate = ? WHERE name = ? AND class_id = ? "
+        "AND active = 1",
+        (1 if value else 0, name, class_id),
+    )
+    await _db.commit()
+    return cur.rowcount > 0
+
+
 async def list_contestants(class_id: int) -> list[aiosqlite.Row]:
     async with _db.execute(
         "SELECT * FROM contestants WHERE class_id = ? AND active = 1 "
@@ -256,7 +272,8 @@ async def standings(class_id: int, month: str) -> list[aiosqlite.Row]:
     """Latest points per active contestant in a class for the given month,
     highest first. Contestants with no reading this month are omitted."""
     query = """
-        SELECT c.id, c.name, c.is_member, c.clan, s.points, s.matches, s.recorded_at
+        SELECT c.id, c.name, c.is_member, c.clan, c.is_candidate,
+               s.points, s.matches, s.recorded_at
         FROM contestants c
         JOIN snapshots s ON s.contestant_id = c.id
         WHERE c.class_id = ? AND c.active = 1 AND s.month = ?

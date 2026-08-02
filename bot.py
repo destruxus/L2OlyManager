@@ -423,9 +423,9 @@ async def handle_set_candidates(message: discord.Message):
         return
     for n in names:
         await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
+        await db.mark_candidate(n, cls["id"], True)
     await message.reply(
-        f"Set {len(names)} {OUR_CLAN} candidate(s) for **{cls['name']}**: "
-        f"{', '.join(names)}"
+        f"👑 Hero candidate(s) for **{cls['name']}**: {', '.join(names)}"
     )
     await refresh_overview()
 
@@ -783,18 +783,19 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     )
     candidates = await ensure_staff_channel(
         "set-candidates",
-        "📝 Managers: register candidates with `ClassName: Name1, Name2` "
-        "(comma-separate for several).",
+        "👑 Managers: mark the Hero pick per class with `ClassName: Name1, Name2` "
+        "(comma-separate for co-candidates).",
     )
     await db.set_setting("candidates_channel_id", candidates.id)
     candidates_channel_id = candidates.id
 
     if not await db.get_setting("candidates_intro_posted"):
         await candidates.send(
-            "**Set candidates** (managers only).\n"
-            "Post `ClassName: Name1, Name2, …` to register candidates for a class "
-            "— comma-separate to add several at once. Example: "
-            "`Duelist: Alice, Bob, Carol`. They're added as members of that class."
+            "**Set Hero candidates** (managers only).\n"
+            "A candidate is the person we're backing to win **Hero** in a class — "
+            "not every clan player. Post `ClassName: Name1, Name2, …` to mark them "
+            "(comma-separate for co-candidates). Example: `Duelist: Alice`. "
+            "They appear crowned 👑 in #overview."
         )
         await db.set_setting("candidates_intro_posted", "1")
 
