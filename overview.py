@@ -139,65 +139,135 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
                 pass
 
 
+# Table columns: (data key, header, alignment, max width)
+_OVERVIEW_COLS = [
+    ("class",  "CLASS",      "l", 15),
+    ("clan",   "CLAN",       "l", 8),
+    ("cand",   "CAND.",      "l", 12),
+    ("pts",    "PTS",        "r", 4),
+    ("rival",  "BEST RIVAL", "l", 16),
+    ("gap",    "GAP",        "r", 5),
+    ("status", "STATUS",     "l", 8),
+]
+
+
+def _trunc(value, n: int) -> str:
+    s = str(value)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 async def build_live_overview(db, month: str, margin: int):
-    """Build the live overview embeds: every class where we field candidates,
-    each candidate, and how far ahead/behind they are versus the leading
-    competitor (the top-ranked rival) in that class."""
-    G, Y, R, W = "\U0001F7E2", "\U0001F7E1", "\U0001F534", "\U000026AA"
+    """Build the live overview as a monospace table: every class where we field
+    candidates, each candidate, and how far ahead/behind they are versus the
+    leading competitor. Sorted most-behind-first so problems sit at the top."""
     classes = await db.list_classes()
-    blocks = []
+
+    # 1) Gather one record per candidate, grouped by class, with a status rank.
+    #    rank: 0 behind, 1 no score, 2 close, 3 ahead/leading (lower = more urgent)
+    class_groups = []
     for cl in classes:
         people = await db.list_contestants(cl["id"])
         candidates = [p for p in people if p["is_member"]]
         if not candidates:
             continue
-        rows = await db.standings(cl["id"], month)          # sorted high → low
-        pts_by_id = {r["id"]: r["points"] for r in rows}
-        rivals = [r for r in rows if not r["is_member"]]
+        srows = await db.standings(cl["id"], month)
+        pts_by_id = {r["id"]: r["points"] for r in srows}
+        rivals = [r for r in srows if not r["is_member"]]
         top = rivals[0] if rivals else None
-        rtag = f"{clan_emoji(top['clan'], False)} {top['name']}" if top else None
 
-        lines = [f"**{cl['name']}**"]
+        recs = []
         for c in candidates:
-            tag = clan_emoji(c["clan"], c["is_member"])
             pts = pts_by_id.get(c["id"])
             if pts is None:
-                lines.append(f"{W} {tag} {c['name']} — no score yet")
+                rank, gap, status = 1, None, "NO SCORE"
             elif top is None:
-                lines.append(f"{G} {tag} {c['name']} — {pts} (leading, no rival)")
+                rank, gap, status = 3, None, "LEADING"
             else:
                 gap = pts - top["points"]
-                emoji = G if gap > margin else (R if gap < -margin else Y)
-                sign = f"+{gap}" if gap >= 0 else str(gap)
-                lines.append(
-                    f"{emoji} {tag} {c['name']} — {pts} vs {rtag} {top['points']} ({sign})"
+                rank, status = (
+                    (3, "AHEAD") if gap > margin
+                    else (0, "BEHIND") if gap < -margin
+                    else (2, "CLOSE")
                 )
-        blocks.append("\n".join(lines))
+            recs.append({
+                "clan": c["clan"] or "",
+                "cand": c["name"],
+                "pts": pts,
+                "rival": f"{top['name']} {top['points']}" if top else "—",
+                "gap": gap,
+                "status": status,
+                "rank": rank,
+            })
+        recs.sort(key=lambda r: (r["rank"], r["gap"] if r["gap"] is not None else 0))
+        sort_key = (
+            min(r["rank"] for r in recs),
+            min((r["gap"] for r in recs if r["gap"] is not None), default=0),
+        )
+        class_groups.append((sort_key, cl["name"], recs))
+
+    class_groups.sort(key=lambda g: g[0])
 
     title = f"Live Olympiad Overview — {month}"
-    if not blocks:
+    if not class_groups:
         return [discord.Embed(
             title=title, colour=0x3498DB,
             description="No candidates set yet — add them in #set-candidates.",
         )]
 
-    # Pack class blocks into embeds under the 4096-char description limit.
-    chunks, cur = [], ""
-    for b in blocks:
-        if cur and len(cur) + len(b) + 2 > 3800:
-            chunks.append(cur)
-            cur = ""
-        cur += ("\n\n" if cur else "") + b
-    if cur:
-        chunks.append(cur)
+    # 2) Flatten to text cells (class name shown once per group).
+    cells = []
+    for _, cname, recs in class_groups:
+        for i, r in enumerate(recs):
+            gap = r["gap"]
+            cells.append({
+                "class": cname if i == 0 else "",
+                "clan": r["clan"],
+                "cand": r["cand"],
+                "pts": "—" if r["pts"] is None else str(r["pts"]),
+                "rival": r["rival"],
+                "gap": "—" if gap is None else (f"+{gap}" if gap >= 0 else str(gap)),
+                "status": r["status"],
+            })
 
-    embeds = []
-    for i, ch in enumerate(chunks):
-        e = discord.Embed(description=ch, colour=0x3498DB)
-        if i == 0:
+    # 3) Compute column widths and format rows.
+    widths = {
+        key: max(len(hdr), *(len(_trunc(row[key], mx)) for row in cells))
+        for key, hdr, _a, mx in _OVERVIEW_COLS
+    }
+
+    def fmt(values):
+        out = []
+        for (key, _h, align, mx), val in zip(_OVERVIEW_COLS, values):
+            v = _trunc(val, mx)
+            out.append(v.rjust(widths[key]) if align == "r" else v.ljust(widths[key]))
+        return "  ".join(out).rstrip()
+
+    header = fmt([c[1] for c in _OVERVIEW_COLS])
+    sep = "─" * len(header)
+    body = [fmt([row[c[0]] for c in _OVERVIEW_COLS]) for row in cells]
+
+    # 4) Pack into code-block embeds under the 4096-char description limit,
+    #    repeating the header on each.
+    def make_embed(lines, first):
+        block = "```\n" + header + "\n" + sep + "\n" + "\n".join(lines) + "\n```"
+        e = discord.Embed(description=block, colour=0x3498DB)
+        if first:
             e.title = title
-        embeds.append(e)
+        return e
+
+    embeds, cur = [], []
+    base = len(header) + len(sep) + 12
+    length = base
+    for line in body:
+        if cur and length + len(line) + 1 > 3800:
+            embeds.append(make_embed(cur, not embeds))
+            cur, length = [], base
+        cur.append(line)
+        length += len(line) + 1
+    if cur:
+        embeds.append(make_embed(cur, not embeds))
+
     embeds[-1].set_footer(
-        text="🟢 ahead · 🟡 close · 🔴 behind · ⚪ no score — updates live"
+        text="🟢 AHEAD · 🟡 CLOSE · 🔴 BEHIND · ⚪ NO SCORE — updates live"
     )
     return embeds
