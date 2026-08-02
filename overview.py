@@ -140,70 +140,70 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
 
 
 async def build_live_overview(db, month: str, margin: int):
-    """Build the live overview: our Hero candidate per class (crowned 👑, bold)
-    and how far ahead/behind they are versus the leading competitor. Sorted
-    most-behind-first so the classes needing attention sit at the top."""
+    """Build the live overview — one row per class that has any score.
+
+    Each row: class, then the current #1. If that #1 is our Hero candidate we
+    show the closest chaser (how far we're ahead). If it's someone else we show
+    our candidate and how far behind they are. Sorted worst-first."""
     G, Y, R, W = "\U0001F7E2", "\U0001F7E1", "\U0001F534", "\U000026AA"
-    CROWN = "\U0001F451"
     classes = await db.list_classes()
 
-    recs = []
+    def person(p):
+        if p["is_candidate"]:
+            return f"\U0001F451 **{p['name']}**"           # 👑 + bold
+        return f"{clan_emoji(p['clan'], p['is_member'])} {p['name']}"
+
+    rows = []
     for cl in classes:
-        people = await db.list_contestants(cl["id"])
-        candidates = [p for p in people if p["is_candidate"]]
-        if not candidates:
-            continue
-        srows = await db.standings(cl["id"], month)
-        pts_by_id = {r["id"]: r["points"] for r in srows}
-        rivals = [r for r in srows if not r["is_member"]]
-        top = rivals[0] if rivals else None
+        srows = await db.standings(cl["id"], month)         # scored, high → low
+        if not srows:
+            continue                                        # only classes with a score
+        leader = srows[0]
+        scored_cands = [r for r in srows if r["is_candidate"]]
+        cname = cl["name"]
 
-        for c in candidates:
-            pts = pts_by_id.get(c["id"])
-            if pts is None:
-                rank, gap, status = 1, None, W
-            elif top is None:
-                rank, gap, status = 3, None, G
+        if leader["is_candidate"]:
+            # Our candidate is #1 — show the closest chaser.
+            chaser = srows[1] if len(srows) > 1 else None
+            if chaser:
+                gap = leader["points"] - chaser["points"]
+                status = G if gap > margin else Y
+                line = (f"{status} **{cname}** — {person(leader)} {leader['points']}  ·  "
+                        f"2nd {person(chaser)} {chaser['points']} (+{gap})")
+                sort_val = gap
             else:
-                gap = pts - top["points"]
-                rank, status = (
-                    (3, G) if gap > margin
-                    else (0, R) if gap < -margin
-                    else (2, Y)
-                )
-            recs.append({
-                "class": cl["name"], "cand": c["name"], "clan": c["clan"],
-                "pts": pts, "top": top, "gap": gap, "status": status, "rank": rank,
-            })
+                line = (f"{G} **{cname}** — {person(leader)} {leader['points']}  ·  "
+                        f"solo (leading)")
+                sort_val = 10 ** 6
+        elif scored_cands:
+            # Someone else leads; our candidate has a score — show the gap.
+            cand = scored_cands[0]
+            gap = cand["points"] - leader["points"]         # negative
+            status = R if gap < -margin else Y
+            line = (f"{status} **{cname}** — {person(leader)} {leader['points']}  ·  "
+                    f"us {person(cand)} {cand['points']} ({gap})")
+            sort_val = gap
+        else:
+            # Someone else leads and we have no scoring candidate here.
+            people = await db.list_contestants(cl["id"])
+            cand0 = next((p for p in people if p["is_candidate"]), None)
+            tail = (f"us \U0001F451 **{cand0['name']}** (no score)"
+                    if cand0 else "no candidate")
+            line = f"{W} **{cname}** — {person(leader)} {leader['points']}  ·  {tail}"
+            sort_val = 10 ** 7
+        rows.append((sort_val, line))
 
-    recs.sort(key=lambda r: (r["rank"], r["gap"] if r["gap"] is not None else 0))
+    rows.sort(key=lambda x: x[0])
 
     title = f"Live Olympiad Overview — {month}"
-    if not recs:
+    if not rows:
         return [discord.Embed(
             title=title, colour=0x3498DB,
-            description="No Hero candidates set yet — pick them in #set-candidates.",
+            description="No scores recorded yet this month.",
         )]
 
-    lines = []
-    for r in recs:
-        head = (f"{r['status']} {CROWN} **{r['cand']}** "
-                f"{clan_emoji(r['clan'], True)} · {r['class']}")
-        if r["pts"] is None:
-            lines.append(f"{head} — *no score yet*")
-        elif r["top"] is None:
-            lines.append(f"{head} — **{r['pts']}** · leading (no rival)")
-        else:
-            sign = f"+{r['gap']}" if r["gap"] >= 0 else str(r["gap"])
-            rtag = clan_emoji(r["top"]["clan"], False)
-            lines.append(
-                f"{head} — **{r['pts']}** vs {rtag} {r['top']['name']} "
-                f"{r['top']['points']} (**{sign}**)"
-            )
-
-    # Pack lines into embeds under the 4096-char description limit.
-    embeds, cur = [], []
-    length = 0
+    lines = [r[1] for r in rows]
+    embeds, cur, length = [], [], 0
     for ln in lines:
         if cur and length + len(ln) + 1 > 3800:
             e = discord.Embed(description="\n".join(cur), colour=0x3498DB)
@@ -219,6 +219,6 @@ async def build_live_overview(db, month: str, margin: int):
     embeds.append(e)
 
     embeds[-1].set_footer(
-        text="👑 Hero candidate · 🟢 ahead · 🟡 close · 🔴 behind · ⚪ no score — updates live"
+        text="👑 our candidate · 🟢 leading · 🟡 close · 🔴 behind · ⚪ no candidate — updates live"
     )
     return embeds
