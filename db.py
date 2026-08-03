@@ -253,6 +253,17 @@ async def mark_candidate(name: str, class_id: int, value: bool = True) -> bool:
     return cur.rowcount > 0
 
 
+async def clear_candidates(class_id: int) -> int:
+    """Unflag every candidate in a class (keeps the contestants tracked)."""
+    cur = await _db.execute(
+        "UPDATE contestants SET is_candidate = 0 "
+        "WHERE class_id = ? AND is_candidate = 1 AND active = 1",
+        (class_id,),
+    )
+    await _db.commit()
+    return cur.rowcount
+
+
 async def list_contestants(class_id: int) -> list[aiosqlite.Row]:
     async with _db.execute(
         "SELECT * FROM contestants WHERE class_id = ? AND active = 1 "

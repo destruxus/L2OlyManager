@@ -428,12 +428,36 @@ async def handle_set_candidates(message: discord.Message):
     if not names:
         await message.reply("Give at least one name, e.g. `Duelist: Name1, Name2`.")
         return
+
+    # `Duelist: clear` (or none/reset) removes every candidate from the class.
+    if len(names) == 1 and names[0].lower() in ("clear", "none", "reset"):
+        n = await db.clear_candidates(cls["id"])
+        await message.reply(f"Cleared {n} candidate(s) from **{cls['name']}**.")
+        await after_change(cls["id"])
+        return
+
+    # Each name adds a candidate; a leading '-' removes one.
+    added, removed, missing = [], [], []
     for n in names:
-        await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
-        await db.mark_candidate(n, cls["id"], True)
-    await message.reply(
-        f"👑 Hero candidate(s) for **{cls['name']}**: {', '.join(names)}"
-    )
+        if n.startswith("-"):
+            target = n[1:].strip()
+            if target and await db.mark_candidate(target, cls["id"], False):
+                removed.append(target)
+            elif target:
+                missing.append(target)
+        else:
+            await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
+            await db.mark_candidate(n, cls["id"], True)
+            added.append(n)
+
+    parts = []
+    if added:
+        parts.append(f"👑 added: {', '.join(added)}")
+    if removed:
+        parts.append(f"➖ removed: {', '.join(removed)}")
+    if missing:
+        parts.append(f"⚠️ not found: {', '.join(missing)}")
+    await message.reply(f"**{cls['name']}** — " + (" · ".join(parts) if parts else "no changes"))
     await after_change(cls["id"])
 
 
@@ -1060,8 +1084,8 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     )
     candidates = await ensure_staff_channel(
         "set-candidates",
-        "👑 Managers: mark the Hero pick per class with `ClassName: Name1, Name2` "
-        "(comma-separate for co-candidates).",
+        "👑 Managers: `ClassName: Name` to add a Hero pick, `ClassName: -Name` to "
+        "remove one, `ClassName: clear` to clear all.",
     )
     dashboard_ch = await ensure_staff_channel(
         "admin-dashboard",
@@ -1077,9 +1101,11 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         await candidates.send(
             "**Set Hero candidates** (managers only).\n"
             "A candidate is the person we're backing to win **Hero** in a class — "
-            "not every clan player. Post `ClassName: Name1, Name2, …` to mark them "
-            "(comma-separate for co-candidates). Example: `Duelist: Alice`. "
-            "They appear crowned 👑 in #overview."
+            "not every clan player.\n"
+            "• Add: `Duelist: Alice, Bob` (comma-separate for co-candidates)\n"
+            "• Remove one: `Duelist: -Alice`\n"
+            "• Clear all: `Duelist: clear`\n"
+            "Candidates appear crowned 👑 in #overview and the class boards."
         )
         await db.set_setting("candidates_intro_posted", "1")
 
