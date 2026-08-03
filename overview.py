@@ -71,16 +71,25 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str,
     top_rival = max((r["points"] for r in rivals), default=None)
 
     # Ranking block (already sorted high -> low by the DB query).
-    shown = rows[:limit] if limit else rows
-    lines = []
-    for i, r in enumerate(shown):
-        medal = MEDALS.get(i, f"`{i + 1:>2}`")
+    def row_line(idx, r):
+        medal = MEDALS.get(idx, f"`{idx + 1:>2}`")
         if r["is_candidate"]:
             name = f"\U0001F451 **{r['name']}**"          # 👑 + bold for our pick
         else:
             name = f"{clan_emoji(r['clan'], r['is_member'])} {r['name']}"
         matches = f"  ·  {r['matches']} matches" if r["matches"] is not None else ""
-        lines.append(f"{medal} {name} — **{r['points']}**{matches}")
+        return f"{medal} {name} — **{r['points']}**{matches}"
+
+    shown = rows[:limit] if limit else rows
+    lines = [row_line(i, r) for i, r in enumerate(shown)]
+
+    # If our candidate didn't make the shown range, append them with their real
+    # standing so they're always visible.
+    if limit:
+        shown_ids = {r["id"] for r in shown}
+        for idx, r in enumerate(rows):
+            if r["is_candidate"] and r["id"] not in shown_ids:
+                lines.append(row_line(idx, r))
     embed.description = "\n".join(lines)
 
     # Per-member verdict block.
