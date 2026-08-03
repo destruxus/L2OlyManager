@@ -998,21 +998,21 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     for cname in CLASSES:
         class_id = await db.upsert_class(cname)
         row = await db.get_class_by_name(cname)
-        if row["channel_id"]:
-            # Already built. On a force run, repair admin/topic and add the
-            # class-standing thread if it doesn't exist yet.
+        # Only treat as "built" if the stored channel actually still exists in
+        # Discord — a deleted channel leaves a stale id, and must be rebuilt.
+        existing = guild.get_channel(row["channel_id"]) if row["channel_id"] else None
+        if existing is not None:
             if force:
-                ch = guild.get_channel(row["channel_id"])
-                if ch is not None:
-                    await ch.set_permissions(
-                        admin_role, view_channel=True, send_messages=True
-                    )
-                    if ch.topic != class_topic(cname):
-                        await ch.edit(topic=class_topic(cname))
-                    repaired += 1
+                await existing.set_permissions(
+                    admin_role, view_channel=True, send_messages=True
+                )
+                if existing.topic != class_topic(cname):
+                    await existing.edit(topic=class_topic(cname))
                 await ensure_standings_thread(row)
+                repaired += 1
             continue
 
+        # Channel is missing (never created, or deleted) → (re)build it.
         # Class role = the opt-in visibility key for this class.
         role = discord.utils.get(guild.roles, name=cname) or await guild.create_role(
             name=cname, mentionable=False, reason="Olympiad class role"
