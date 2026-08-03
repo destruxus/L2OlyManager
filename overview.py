@@ -175,6 +175,35 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
                 pass
 
 
+async def build_hero_prediction(db, month: str):
+    """End-of-month snapshot: the current #1 (projected Hero) of every class
+    that has a score. Our candidate is crowned; others show their clan icon."""
+    classes = await db.list_classes()
+    lines, ours, rivals = [], 0, 0
+    for cl in classes:
+        rows = await db.standings(cl["id"], month)
+        if not rows:
+            continue
+        leader = rows[0]
+        if leader["is_candidate"]:
+            who = f"\U0001F451 **{leader['name']}**"
+        else:
+            who = f"{clan_emoji(leader['clan'], leader['is_member'])} {leader['name']}"
+        if leader["is_member"]:
+            ours += 1
+        else:
+            rivals += 1
+        lines.append(f"**{cl['name']}** — {who} ({leader['points']})")
+
+    embed = discord.Embed(title=f"\U0001F3C6 Hero Prediction — {month}", colour=0xF1C40F)
+    embed.description = "\n".join(lines) if lines else "No scores recorded this month."
+    if lines:
+        embed.set_footer(
+            text=f"Projected: {ours} ours · {rivals} rivals · 👑 our candidate"
+        )
+    return embed
+
+
 async def build_candidate_overview(db):
     """A simple list of our Hero candidate(s) per class, plus which classes
     still have no candidate."""

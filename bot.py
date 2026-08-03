@@ -31,7 +31,7 @@ import db
 from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
 from overview import (
     post_overview, build_standing_embed, build_live_overview, post_class_boards,
-    build_candidate_overview,
+    build_candidate_overview, build_hero_prediction,
 )
 from parser import parse_score
 
@@ -561,7 +561,7 @@ async def on_ready():
     if rows and all(r["role_id"] for r in rows):
         bot.add_view(build_signup_view(rows))
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    for loop in (scheduler, friday_boards, saturday_boards):
+    for loop in (scheduler, friday_boards, saturday_boards, hero_prediction):
         if not loop.is_running():
             loop.start()
     await refresh_overview()  # keep the live overview current after a restart
@@ -673,6 +673,30 @@ async def saturday_boards():
 
 @saturday_boards.before_loop
 async def _before_saturday():
+    await bot.wait_until_ready()
+
+
+# Last day of the month, 23:00 UTC — "Hero Prediction" to #general-announcements.
+@tasks.loop(time=time(hour=23, minute=0, tzinfo=timezone.utc))
+async def hero_prediction():
+    now = datetime.now(timezone.utc)
+    if (now + timedelta(days=1)).month == now.month:   # not the last day
+        return
+    announce = await db.get_setting("announcements_channel_id")
+    if not announce:
+        return
+    channel = bot.get_channel(int(announce))
+    if channel is None:
+        return
+    embed = await build_hero_prediction(db, await get_month())
+    try:
+        await channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+@hero_prediction.before_loop
+async def _before_prediction():
     await bot.wait_until_ready()
 
 
