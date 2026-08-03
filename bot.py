@@ -20,7 +20,7 @@ Run with:  python bot.py   (reads config.json next to this file)
 
 import json
 import os
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import discord
@@ -29,7 +29,9 @@ from discord.ext import commands, tasks
 
 import db
 from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
-from overview import post_overview, build_standing_embed, build_live_overview
+from overview import (
+    post_overview, build_standing_embed, build_live_overview, post_class_boards,
+)
 from parser import parse_score
 
 # ---------------------------------------------------------------------------
@@ -478,8 +480,9 @@ async def on_ready():
     if rows and all(r["role_id"] for r in rows):
         bot.add_view(build_signup_view(rows))
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    if not scheduler.is_running():
-        scheduler.start()
+    for loop in (scheduler, friday_boards, saturday_boards):
+        if not loop.is_running():
+            loop.start()
     await refresh_overview()  # keep the live overview current after a restart
     print(f"Logged in as {bot.user} — ready.")
 
@@ -524,26 +527,46 @@ async def on_message(message: discord.Message):
 
 
 # ---------------------------------------------------------------------------
-# Scheduler: daily at OVERVIEW_HOUR
+# Schedulers
 # ---------------------------------------------------------------------------
+# Daily housekeeping at OVERVIEW_HOUR (local): archive Heroes at month end.
 @tasks.loop(time=time(hour=OVERVIEW_HOUR, tzinfo=TZ))
 async def scheduler():
     today = now_local()
-    month = await get_month()
     announce = await db.get_setting("announcements_channel_id")
     announce = int(announce) if announce else None
-
-    # Friday overview (Monday=0 … Friday=4).
-    if today.weekday() == 4:
-        await post_overview(bot, db, month, MARGIN, announce)
-
-    # Last day of the month -> archive Heroes and roll the cycle.
     if (today + timedelta(days=1)).month != today.month:
         await do_close_month(announce)
 
 
 @scheduler.before_loop
 async def _before_scheduler():
+    await bot.wait_until_ready()
+
+
+# Friday 16:00 UTC — "Pre-Olympiad" top-10 board in every class points thread.
+@tasks.loop(time=time(hour=16, minute=0, tzinfo=timezone.utc))
+async def friday_boards():
+    if datetime.now(timezone.utc).weekday() != 4:      # 4 = Friday
+        return
+    await post_class_boards(bot, db, await get_month(), MARGIN, "Pre-Olympiad")
+
+
+@friday_boards.before_loop
+async def _before_friday():
+    await bot.wait_until_ready()
+
+
+# Saturday 21:00 UTC — "Weekend results" top-10 board in every class points thread.
+@tasks.loop(time=time(hour=21, minute=0, tzinfo=timezone.utc))
+async def saturday_boards():
+    if datetime.now(timezone.utc).weekday() != 5:      # 5 = Saturday
+        return
+    await post_class_boards(bot, db, await get_month(), MARGIN, "Weekend results")
+
+
+@saturday_boards.before_loop
+async def _before_saturday():
     await bot.wait_until_ready()
 
 

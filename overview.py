@@ -54,10 +54,12 @@ def _worst_colour(rows, margin: int) -> int:
     return GREEN
 
 
-def build_standing_embed(class_name: str, rows, margin: int, month: str) -> discord.Embed:
-    """Build the ranking embed for one class."""
+def build_standing_embed(class_name: str, rows, margin: int, month: str,
+                         title: str | None = None, limit: int | None = None) -> discord.Embed:
+    """Build the ranking embed for one class. `limit` caps the displayed rows
+    (e.g. top 10); the verdict is still computed from everyone."""
     embed = discord.Embed(
-        title=f"{class_name} — Standings ({month})",
+        title=title or f"{class_name} — Standings ({month})",
         colour=_worst_colour(rows, margin),
     )
 
@@ -69,8 +71,9 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str) -> disc
     top_rival = max((r["points"] for r in rivals), default=None)
 
     # Ranking block (already sorted high -> low by the DB query).
+    shown = rows[:limit] if limit else rows
     lines = []
-    for i, r in enumerate(rows):
+    for i, r in enumerate(shown):
         medal = MEDALS.get(i, f"`{i + 1:>2}`")
         tag = "**" if r["is_member"] else ""
         who = clan_emoji(r["clan"], r["is_member"])
@@ -89,6 +92,28 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str) -> disc
 
     embed.set_footer(text="🐺 Wolfpack · ❓ ally · ⚔️ rival")
     return embed
+
+
+async def post_class_boards(bot, db, month: str, margin: int, heading: str, limit: int = 10):
+    """Post a top-`limit` board into each class's points thread — used for the
+    scheduled 'Pre-Olympiad' (Fri) and 'Weekend results' (Sat) posts."""
+    for cl in await db.list_classes():
+        rows = await db.standings(cl["id"], month)
+        if not rows:
+            continue
+        thread = bot.get_channel(cl["points_thread_id"]) if cl["points_thread_id"] else None
+        if thread is None:
+            continue
+        embed = build_standing_embed(
+            cl["name"], rows, margin, month,
+            title=f"{heading} — {cl['name']} ({month})", limit=limit,
+        )
+        try:
+            if getattr(thread, "archived", False):
+                await thread.edit(archived=False)
+            await thread.send(embed=embed)
+        except discord.HTTPException:
+            pass
 
 
 async def post_overview(bot, db, month: str, margin: int, announce_channel_id: int | None):
