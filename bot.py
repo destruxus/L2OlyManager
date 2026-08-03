@@ -31,7 +31,7 @@ import db
 from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
 from overview import (
     post_overview, build_standing_embed, build_live_overview, post_class_boards,
-    build_candidate_overview, build_hero_prediction,
+    build_candidate_overview, build_hero_prediction, build_admin_dashboard,
 )
 from parser import parse_score
 
@@ -65,6 +65,8 @@ overview_channel_id: int | None = None    # read-only "overview" channel
 overview_message_id: int | None = None    # the single live-edited overview message
 candidate_overview_channel_id: int | None = None  # read-only "candidate-overview" channel
 candidate_overview_message_id: int | None = None  # its single live-edited message
+admin_dashboard_channel_id: int | None = None     # staff "admin-dashboard" channel
+admin_dashboard_message_id: int | None = None      # its single dashboard message
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +469,95 @@ async def refresh_candidate_overview():
     await db.set_setting("candidate_overview_message_id", msg.id)
 
 
+# ---------------------------------------------------------------------------
+# Admin dashboard (staff-only): stats + buttons to pull up any overview
+# ---------------------------------------------------------------------------
+class DashboardView(discord.ui.View):
+    """Persistent button panel on the admin dashboard message."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _ok(self, interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Live Overview", emoji="🏆",
+                       style=discord.ButtonStyle.primary, custom_id="dash:live")
+    async def live(self, interaction, button):
+        if not await self._ok(interaction):
+            return
+        embeds = await build_live_overview(db, await get_month(), MARGIN)
+        await interaction.response.send_message(embeds=embeds[:10], ephemeral=True)
+
+    @discord.ui.button(label="Candidates", emoji="👑",
+                       style=discord.ButtonStyle.primary, custom_id="dash:cand")
+    async def cand(self, interaction, button):
+        if not await self._ok(interaction):
+            return
+        await interaction.response.send_message(
+            embed=await build_candidate_overview(db), ephemeral=True
+        )
+
+    @discord.ui.button(label="Hero Prediction", emoji="🔮",
+                       style=discord.ButtonStyle.primary, custom_id="dash:hero")
+    async def hero(self, interaction, button):
+        if not await self._ok(interaction):
+            return
+        await interaction.response.send_message(
+            embed=await build_hero_prediction(db, await get_month()), ephemeral=True
+        )
+
+    @discord.ui.button(label="Post Class Boards", emoji="📋",
+                       style=discord.ButtonStyle.danger, custom_id="dash:boards")
+    async def boards(self, interaction, button):
+        if not await self._ok(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await post_class_boards(bot, db, await get_month(), MARGIN, "Standings")
+        await interaction.followup.send(
+            "Posted current standings to every class points thread.", ephemeral=True
+        )
+
+    @discord.ui.button(label="Refresh", emoji="🔄",
+                       style=discord.ButtonStyle.secondary, custom_id="dash:refresh")
+    async def refresh(self, interaction, button):
+        if not await self._ok(interaction):
+            return
+        await update_admin_dashboard()
+        await interaction.response.send_message("Dashboard refreshed.", ephemeral=True)
+
+
+async def update_admin_dashboard():
+    """Edit (or post) the admin dashboard message with fresh stats + buttons."""
+    global admin_dashboard_message_id
+    if not admin_dashboard_channel_id:
+        return
+    channel = bot.get_channel(admin_dashboard_channel_id)
+    if channel is None:
+        return
+    embed = await build_admin_dashboard(db, await get_month())
+    view = DashboardView()
+    if admin_dashboard_message_id:
+        try:
+            await channel.get_partial_message(admin_dashboard_message_id).edit(
+                embed=embed, view=view
+            )
+            return
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            return
+    try:
+        msg = await channel.send(embed=embed, view=view)
+    except discord.HTTPException:
+        return
+    admin_dashboard_message_id = msg.id
+    await db.set_setting("admin_dashboard_message_id", msg.id)
+
+
 async def update_class_board(class_id: int):
     """Edit (or post) the always-on top-10 board in the class's own
     'class standing' thread, under that class's channel."""
@@ -544,6 +635,7 @@ async def on_ready():
     global general_points_id, candidates_channel_id
     global overview_channel_id, overview_message_id
     global candidate_overview_channel_id, candidate_overview_message_id
+    global admin_dashboard_channel_id, admin_dashboard_message_id
     gp = await db.get_setting("points_channel_id")
     general_points_id = int(gp) if gp else None
     cc = await db.get_setting("candidates_channel_id")
@@ -556,10 +648,15 @@ async def on_ready():
     candidate_overview_channel_id = int(cov) if cov else None
     covm = await db.get_setting("candidate_overview_message_id")
     candidate_overview_message_id = int(covm) if covm else None
+    ad = await db.get_setting("admin_dashboard_channel_id")
+    admin_dashboard_channel_id = int(ad) if ad else None
+    adm = await db.get_setting("admin_dashboard_message_id")
+    admin_dashboard_message_id = int(adm) if adm else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
         bot.add_view(build_signup_view(rows))
+    bot.add_view(DashboardView())  # re-bind dashboard buttons after restart
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     for loop in (scheduler, friday_boards, saturday_boards, hero_prediction):
         if not loop.is_running():
@@ -567,6 +664,7 @@ async def on_ready():
     await refresh_overview()  # keep the live overview current after a restart
     await refresh_candidate_overview()
     await refresh_all_class_boards()
+    await update_admin_dashboard()
     print(f"Logged in as {bot.user} — ready.")
 
 
@@ -965,8 +1063,15 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         "👑 Managers: mark the Hero pick per class with `ClassName: Name1, Name2` "
         "(comma-separate for co-candidates).",
     )
+    dashboard_ch = await ensure_staff_channel(
+        "admin-dashboard",
+        "🛠️ Manager dashboard: monthly stats + buttons to pull up any overview.",
+    )
     await db.set_setting("candidates_channel_id", candidates.id)
+    await db.set_setting("admin_dashboard_channel_id", dashboard_ch.id)
     candidates_channel_id = candidates.id
+    global admin_dashboard_channel_id
+    admin_dashboard_channel_id = dashboard_ch.id
 
     if not await db.get_setting("candidates_intro_posted"):
         await candidates.send(
@@ -986,6 +1091,7 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     await refresh_overview()             # post the initial live overview
     await refresh_candidate_overview()   # post the candidate overview
     await refresh_all_class_boards()     # post the per-class top-10 boards
+    await update_admin_dashboard()       # post the admin dashboard
     await interaction.followup.send(
         f"Setup complete. Built {created} class channels; "
         f"repaired {repaired} for admin access.",

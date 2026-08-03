@@ -326,6 +326,28 @@ async def record_hero(month: str, class_id: int, contestant_id: int, points: int
     await _db.commit()
 
 
+async def dashboard_counts(month: str) -> dict:
+    """Aggregate counts for the admin dashboard."""
+    async with _db.execute(
+        "SELECT is_member, COUNT(*) FROM contestants WHERE active=1 GROUP BY is_member"
+    ) as cur:
+        rows = await cur.fetchall()
+    members = sum(r[1] for r in rows if r[0] == 1)
+    rivals = sum(r[1] for r in rows if r[0] == 0)
+    async with _db.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT class_id) FROM contestants "
+        "WHERE active=1 AND is_candidate=1"
+    ) as cur:
+        cand = await cur.fetchone()
+    async with _db.execute("SELECT COUNT(*) FROM snapshots WHERE month=?", (month,)) as cur:
+        snaps = (await cur.fetchone())[0]
+    return {
+        "members": members, "rivals": rivals,
+        "candidates": cand[0], "classes_with_candidate": cand[1],
+        "snapshots": snaps,
+    }
+
+
 async def heroes_for_month(month: str) -> list[aiosqlite.Row]:
     query = """
         SELECT h.points, cl.name AS class_name, c.name AS contestant_name, c.is_member

@@ -175,6 +175,61 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
                 pass
 
 
+async def build_admin_dashboard(db, month: str):
+    """Monthly reporting stats for the manager dashboard."""
+    counts = await db.dashboard_counts(month)
+    classes = await db.list_classes()
+    total = len(classes)
+
+    scored = ours_leading = rivals_leading = 0
+    for cl in classes:
+        rows = await db.standings(cl["id"], month)
+        if not rows:
+            continue
+        scored += 1
+        if rows[0]["is_member"]:
+            ours_leading += 1
+        else:
+            rivals_leading += 1
+
+    # Previous month's archived Heroes.
+    y, m = (int(x) for x in month.split("-"))
+    prev = f"{(y - 1) if m == 1 else y:04d}-{(12 if m == 1 else m - 1):02d}"
+    heroes = await db.heroes_for_month(prev)
+    hero_ours = sum(1 for h in heroes if h["is_member"])
+
+    embed = discord.Embed(title=f"\U0001F6E0️ Admin Dashboard — {month}", colour=0x2C3E50)
+    embed.add_field(
+        name="Contestants",
+        value=f"🐺/❓ ours: **{counts['members']}**\n⚔️ rivals: **{counts['rivals']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="Candidates",
+        value=f"set: **{counts['candidates']}**\n"
+              f"classes covered: **{counts['classes_with_candidate']}/{total}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="Scores this month",
+        value=f"entries: **{counts['snapshots']}**\n"
+              f"classes scored: **{scored}/{total}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="Projected leaders",
+        value=f"🟢 ours: **{ours_leading}**\n🔴 rivals: **{rivals_leading}**",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"Heroes last month ({prev})",
+        value=f"total: **{len(heroes)}**\nours: **{hero_ours}**",
+        inline=True,
+    )
+    embed.set_footer(text="Buttons below pull up any overview • Refresh to recompute")
+    return embed
+
+
 async def build_hero_prediction(db, month: str):
     """End-of-month snapshot: the current #1 (projected Hero) of every class
     that has a score. Our candidate is crowned; others show their clan icon."""
