@@ -268,7 +268,10 @@ async def build_candidate_overview(db):
         people = await db.list_contestants(cl["id"])
         cands = [p for p in people if p["is_candidate"]]
         if cands:
-            names = ", ".join(f"\U0001F451 **{c['name']}**" for c in cands)
+            names = ", ".join(
+                f"\U0001F451 {clan_emoji(c['clan'], c['is_member'])} **{c['name']}**"
+                for c in cands
+            )
             have.append(f"**{cl['name']}** — {names}")
         else:
             missing.append(cl["name"])
