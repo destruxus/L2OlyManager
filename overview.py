@@ -175,6 +175,32 @@ async def post_overview(bot, db, month: str, margin: int, announce_channel_id: i
                 pass
 
 
+async def build_candidate_overview(db):
+    """A simple list of our Hero candidate(s) per class, plus which classes
+    still have no candidate."""
+    classes = await db.list_classes()
+    have, missing = [], []
+    for cl in classes:
+        people = await db.list_contestants(cl["id"])
+        cands = [p for p in people if p["is_candidate"]]
+        if cands:
+            names = ", ".join(f"\U0001F451 **{c['name']}**" for c in cands)
+            have.append(f"**{cl['name']}** — {names}")
+        else:
+            missing.append(cl["name"])
+
+    embed = discord.Embed(title="Hero Candidates", colour=0x9B59B6)
+    embed.description = "\n".join(have) if have else "No candidates set yet — pick them in #set-candidates."
+    if missing:
+        embed.add_field(
+            name=f"No candidate yet ({len(missing)})",
+            value=", ".join(missing)[:1024],
+            inline=False,
+        )
+    embed.set_footer(text="👑 our Hero candidate — updates automatically")
+    return embed
+
+
 async def build_live_overview(db, month: str, margin: int):
     """Build the live overview — one row per class that has any score.
 

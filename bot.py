@@ -31,6 +31,7 @@ import db
 from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
 from overview import (
     post_overview, build_standing_embed, build_live_overview, post_class_boards,
+    build_candidate_overview,
 )
 from parser import parse_score
 
@@ -62,6 +63,8 @@ general_points_id: int | None = None   # shared "general-points" channel
 candidates_channel_id: int | None = None  # manager-only "set-candidates" channel
 overview_channel_id: int | None = None    # read-only "overview" channel
 overview_message_id: int | None = None    # the single live-edited overview message
+candidate_overview_channel_id: int | None = None  # read-only "candidate-overview" channel
+candidate_overview_message_id: int | None = None  # its single live-edited message
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +436,35 @@ async def handle_set_candidates(message: discord.Message):
 
 
 async def after_change(class_id: int):
-    """Refresh both live views after any score/candidate change in a class."""
+    """Refresh the live views after any score/candidate change in a class."""
     await refresh_overview()
     await update_class_board(class_id)
+    await refresh_candidate_overview()
+
+
+async def refresh_candidate_overview():
+    """Edit (or post) the single candidate-overview message."""
+    global candidate_overview_message_id
+    if not candidate_overview_channel_id:
+        return
+    channel = bot.get_channel(candidate_overview_channel_id)
+    if channel is None:
+        return
+    embed = await build_candidate_overview(db)
+    if candidate_overview_message_id:
+        try:
+            await channel.get_partial_message(candidate_overview_message_id).edit(embed=embed)
+            return
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            return
+    try:
+        msg = await channel.send(embed=embed)
+    except discord.HTTPException:
+        return
+    candidate_overview_message_id = msg.id
+    await db.set_setting("candidate_overview_message_id", msg.id)
 
 
 async def update_class_board(class_id: int):
@@ -514,6 +543,7 @@ async def on_ready():
     # Remember the special channels across restarts.
     global general_points_id, candidates_channel_id
     global overview_channel_id, overview_message_id
+    global candidate_overview_channel_id, candidate_overview_message_id
     gp = await db.get_setting("points_channel_id")
     general_points_id = int(gp) if gp else None
     cc = await db.get_setting("candidates_channel_id")
@@ -522,6 +552,10 @@ async def on_ready():
     overview_channel_id = int(ov) if ov else None
     om = await db.get_setting("overview_message_id")
     overview_message_id = int(om) if om else None
+    cov = await db.get_setting("candidate_overview_channel_id")
+    candidate_overview_channel_id = int(cov) if cov else None
+    covm = await db.get_setting("candidate_overview_message_id")
+    candidate_overview_message_id = int(covm) if covm else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
@@ -531,6 +565,7 @@ async def on_ready():
         if not loop.is_running():
             loop.start()
     await refresh_overview()  # keep the live overview current after a restart
+    await refresh_candidate_overview()
     await refresh_all_class_boards()
     print(f"Logged in as {bot.user} — ready.")
 
@@ -577,19 +612,42 @@ async def on_message(message: discord.Message):
 # ---------------------------------------------------------------------------
 # Schedulers
 # ---------------------------------------------------------------------------
-# Daily housekeeping at OVERVIEW_HOUR (local): archive Heroes at month end.
+# Daily housekeeping at OVERVIEW_HOUR (local): on the last day of the month,
+# remind managers to pick next month's candidates, then archive Heroes.
 @tasks.loop(time=time(hour=OVERVIEW_HOUR, tzinfo=TZ))
 async def scheduler():
     today = now_local()
     announce = await db.get_setting("announcements_channel_id")
     announce = int(announce) if announce else None
     if (today + timedelta(days=1)).month != today.month:
+        await remind_pick_candidates()
         await do_close_month(announce)
 
 
 @scheduler.before_loop
 async def _before_scheduler():
     await bot.wait_until_ready()
+
+
+async def remind_pick_candidates():
+    """Ping Olympiad managers in #set-candidates on the last day of the month."""
+    if not candidates_channel_id:
+        return
+    channel = bot.get_channel(candidates_channel_id)
+    if channel is None:
+        return
+    guild = bot.get_guild(GUILD_ID)
+    role = discord.utils.get(guild.roles, name=ADMIN_ROLE) if guild else None
+    mention = role.mention if role else "Olympiad managers"
+    try:
+        await channel.send(
+            f"{mention} 📅 **Last day of the month!** Please review and set next "
+            f"month's **Hero candidates** here (`ClassName: Name`). Current picks "
+            f"carry over until you change them.",
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+    except discord.HTTPException:
+        pass
 
 
 # Friday 16:00 UTC — "Pre-Olympiad" top-10 board in every class points thread.
@@ -725,14 +783,21 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         "overview", hub, False,
         "🏆 Live standings: our candidates vs the leading rival in each class. Updates automatically.",
     )
+    cand_ov = await ensure_text_channel(
+        "candidate-overview", hub, False,
+        "🎖️ All our Hero candidates per class, and which classes still need one. Auto-updates.",
+    )
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
     await db.set_setting("points_channel_id", points_ch.id)
     await db.set_setting("overview_channel_id", overview_ch.id)
+    await db.set_setting("candidate_overview_channel_id", cand_ov.id)
     global general_points_id, candidates_channel_id, overview_channel_id
+    global candidate_overview_channel_id
     general_points_id = points_ch.id
     overview_channel_id = overview_ch.id
+    candidate_overview_channel_id = cand_ov.id
 
     if not await db.get_setting("points_intro_posted"):
         await points_ch.send(
@@ -894,8 +959,9 @@ async def setup(interaction: discord.Interaction, force: bool = False):
 
     await db.set_setting("current_month", month_label())
     await db.set_setting("setup_done", "1")
-    await refresh_overview()          # post the initial live overview
-    await refresh_all_class_boards()  # post the per-class top-10 boards
+    await refresh_overview()             # post the initial live overview
+    await refresh_candidate_overview()   # post the candidate overview
+    await refresh_all_class_boards()     # post the per-class top-10 boards
     await interaction.followup.send(
         f"Setup complete. Built {created} class channels; "
         f"repaired {repaired} for admin access.",
