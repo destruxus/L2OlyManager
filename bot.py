@@ -995,7 +995,9 @@ async def setup(interaction: discord.Interaction, force: bool = False):
 
     created = 0
     repaired = 0
-    for cname in CLASSES:
+    # Create alphabetically so new/rebuilt channels are born in order; the
+    # reorder pass afterwards fixes any pre-existing channels.
+    for cname in sorted(CLASSES, key=str.lower):
         class_id = await db.upsert_class(cname)
         row = await db.get_class_by_name(cname)
         # Only treat as "built" if the stored channel actually still exists in
