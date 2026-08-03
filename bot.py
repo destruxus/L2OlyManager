@@ -62,6 +62,7 @@ general_points_id: int | None = None   # shared "general-points" channel
 candidates_channel_id: int | None = None  # manager-only "set-candidates" channel
 overview_channel_id: int | None = None    # read-only "overview" channel
 overview_message_id: int | None = None    # the single live-edited overview message
+class_standings_channel_id: int | None = None  # read-only per-class top-10 boards
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,7 @@ class NewContestantView(discord.ui.View):
             view=None,
         )
         self.stop()
-        await refresh_overview()
+        await after_change(self.class_id)
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,7 @@ class NewContestantGeneralView(discord.ui.View):
             view=None,
         )
         self.stop()
-        await refresh_overview()
+        await after_change(self.selected_class_id)
 
 
 class ClassUpdateSelect(discord.ui.Select):
@@ -348,7 +349,7 @@ class ClassUpdateSelect(discord.ui.Select):
             content=f"Updated **{v.name}** in **{cname}** → **{v.points}**.", view=None
         )
         v.stop()
-        await refresh_overview()
+        await after_change(cid)
 
 
 class PickClassUpdateView(discord.ui.View):
@@ -376,7 +377,7 @@ async def handle_general_points(message: discord.Message):
             await message.add_reaction("✅")
         except discord.HTTPException:
             pass
-        await refresh_overview()
+        await after_change(found[0]["class_id"])
     elif len(found) == 0:
         class_rows = await db.list_classes()
         view = NewContestantGeneralView(name, points, matches, month, class_rows)
@@ -429,7 +430,51 @@ async def handle_set_candidates(message: discord.Message):
     await message.reply(
         f"👑 Hero candidate(s) for **{cls['name']}**: {', '.join(names)}"
     )
+    await after_change(cls["id"])
+
+
+async def after_change(class_id: int):
+    """Refresh both live views after any score/candidate change in a class."""
     await refresh_overview()
+    await update_class_board(class_id)
+
+
+async def update_class_board(class_id: int):
+    """Edit (or post) the always-on top-10 board for one class in the
+    read-only class-standings channel."""
+    if not class_standings_channel_id:
+        return
+    channel = bot.get_channel(class_standings_channel_id)
+    if channel is None:
+        return
+    cl = await db.get_class_by_id(class_id)
+    if cl is None:
+        return
+    month = await get_month()
+    rows = await db.standings(class_id, month)
+    embed = build_standing_embed(
+        cl["name"], rows, MARGIN, month, title=f"{cl['name']} — Top 10", limit=10
+    )
+    mid = cl["standings_message_id"]
+    if mid:
+        try:
+            await channel.get_partial_message(mid).edit(embed=embed)
+            return
+        except discord.NotFound:
+            pass  # board was deleted — repost below
+        except discord.HTTPException:
+            return
+    try:
+        msg = await channel.send(embed=embed)
+    except discord.HTTPException:
+        return
+    await db.set_class_standings_message(class_id, msg.id)
+
+
+async def refresh_all_class_boards():
+    """Ensure every class has an up-to-date board (used at /setup and startup)."""
+    for cl in await db.list_classes():
+        await update_class_board(cl["id"])
 
 
 async def refresh_overview():
@@ -466,7 +511,7 @@ async def on_ready():
     await db.init_db(DB_PATH)
     # Remember the special channels across restarts.
     global general_points_id, candidates_channel_id
-    global overview_channel_id, overview_message_id
+    global overview_channel_id, overview_message_id, class_standings_channel_id
     gp = await db.get_setting("points_channel_id")
     general_points_id = int(gp) if gp else None
     cc = await db.get_setting("candidates_channel_id")
@@ -475,6 +520,8 @@ async def on_ready():
     overview_channel_id = int(ov) if ov else None
     om = await db.get_setting("overview_message_id")
     overview_message_id = int(om) if om else None
+    cs = await db.get_setting("class_standings_channel_id")
+    class_standings_channel_id = int(cs) if cs else None
     # Re-register the persistent signup view so its dropdowns work after restart.
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
@@ -484,6 +531,7 @@ async def on_ready():
         if not loop.is_running():
             loop.start()
     await refresh_overview()  # keep the live overview current after a restart
+    await refresh_all_class_boards()
     print(f"Logged in as {bot.user} — ready.")
 
 
@@ -517,7 +565,7 @@ async def on_message(message: discord.Message):
             await message.add_reaction("✅")
         except discord.HTTPException:
             pass
-        await refresh_overview()
+        await after_change(cls["id"])
     else:
         view = NewContestantView(name, cls["id"], points, matches, month)
         await message.reply(
@@ -677,15 +725,22 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         "overview", hub, False,
         "🏆 Live standings: our candidates vs the leading rival in each class. Updates automatically.",
     )
+    class_standings = await ensure_text_channel(
+        "class-standings", hub, False,
+        "📋 Always-on top-10 board for every class. 👑 = our Hero candidate. Read-only, auto-updates.",
+    )
 
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
     await db.set_setting("points_channel_id", points_ch.id)
     await db.set_setting("overview_channel_id", overview_ch.id)
+    await db.set_setting("class_standings_channel_id", class_standings.id)
     global general_points_id, candidates_channel_id, overview_channel_id
+    global class_standings_channel_id
     general_points_id = points_ch.id
     overview_channel_id = overview_ch.id
+    class_standings_channel_id = class_standings.id
 
     if not await db.get_setting("points_intro_posted"):
         await points_ch.send(
@@ -827,7 +882,8 @@ async def setup(interaction: discord.Interaction, force: bool = False):
 
     await db.set_setting("current_month", month_label())
     await db.set_setting("setup_done", "1")
-    await refresh_overview()  # post the initial live overview
+    await refresh_overview()          # post the initial live overview
+    await refresh_all_class_boards()  # post the per-class top-10 boards
     await interaction.followup.send(
         f"Setup complete. Built {created} class channels; "
         f"repaired {repaired} for admin access.",

@@ -75,10 +75,12 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str,
     lines = []
     for i, r in enumerate(shown):
         medal = MEDALS.get(i, f"`{i + 1:>2}`")
-        tag = "**" if r["is_member"] else ""
-        who = clan_emoji(r["clan"], r["is_member"])
+        if r["is_candidate"]:
+            name = f"\U0001F451 **{r['name']}**"          # 👑 + bold for our pick
+        else:
+            name = f"{clan_emoji(r['clan'], r['is_member'])} {r['name']}"
         matches = f"  ·  {r['matches']} matches" if r["matches"] is not None else ""
-        lines.append(f"{medal} {who} {tag}{r['name']}{tag} — **{r['points']}**{matches}")
+        lines.append(f"{medal} {name} — **{r['points']}**{matches}")
     embed.description = "\n".join(lines)
 
     # Per-member verdict block.
