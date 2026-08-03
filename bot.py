@@ -1043,6 +1043,20 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         await db.set_class_standings_thread(class_id, standing.id)
         created += 1
 
+    # ---- Sort class channels alphabetically within the category ----
+    # Moving each to the end in A→Z order leaves the category alphabetical.
+    ordered = sorted(
+        (r for r in await db.list_classes() if r["channel_id"]),
+        key=lambda r: r["name"].lower(),
+    )
+    for r in ordered:
+        ch = guild.get_channel(r["channel_id"])
+        if ch is not None:
+            try:
+                await ch.move(end=True, category=hidden)
+            except discord.HTTPException:
+                pass
+
     # ---- Manager-only staff area (hidden from everyone but the admin role) ----
     staff = discord.utils.get(guild.categories, name=STAFF_CATEGORY)
     if staff is None:
