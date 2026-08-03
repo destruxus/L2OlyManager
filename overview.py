@@ -101,7 +101,7 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str,
             verdicts.append(f"{emoji} **{m['name']}** — {label}")
         embed.add_field(name="Our contestants", value="\n".join(verdicts), inline=False)
 
-    embed.set_footer(text="🐺 Wolfpack · ❓ ally · ⚔️ rival")
+    embed.set_footer(text="🐺 Wolfpack · ❓ Unknown · ⚔️ Rival")
     return embed
 
 
