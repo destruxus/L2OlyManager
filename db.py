@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS classes (
     points_thread_id     INTEGER,
     discussion_thread_id INTEGER,
     role_id              INTEGER,
-    standings_message_id INTEGER   -- live top-10 board in the class-standings channel
+    standings_thread_id  INTEGER,  -- the "class standing" thread under the class channel
+    standings_message_id INTEGER   -- the live top-10 board message in that thread
 );
 
 CREATE TABLE IF NOT EXISTS contestants (
@@ -105,6 +106,8 @@ async def init_db(path: str) -> None:
         ccols = [row[1] for row in await cur.fetchall()]
     if "standings_message_id" not in ccols:
         await _db.execute("ALTER TABLE classes ADD COLUMN standings_message_id INTEGER")
+    if "standings_thread_id" not in ccols:
+        await _db.execute("ALTER TABLE classes ADD COLUMN standings_thread_id INTEGER")
     await _db.commit()
 
 
@@ -170,6 +173,13 @@ async def get_class_by_id(class_id: int) -> aiosqlite.Row | None:
 async def set_class_standings_message(class_id: int, msg_id: int) -> None:
     await _db.execute(
         "UPDATE classes SET standings_message_id = ? WHERE id = ?", (msg_id, class_id)
+    )
+    await _db.commit()
+
+
+async def set_class_standings_thread(class_id: int, thread_id: int) -> None:
+    await _db.execute(
+        "UPDATE classes SET standings_thread_id = ? WHERE id = ?", (thread_id, class_id)
     )
     await _db.commit()
 
