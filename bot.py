@@ -136,7 +136,7 @@ def build_howto_embed() -> discord.Embed:
     )
     e.add_field(
         name="Legend",
-        value="👑 Hero candidate · 🐺 Wolfpack · ❓ Unknown ally · ⚔️ rival",
+        value="👑 Hero candidate · 🐺 Wolfpack · ❓ Unknown · ⚔️ rival",
         inline=False,
     )
     e.set_footer(text="Questions? Ask in #general-discussion.")
