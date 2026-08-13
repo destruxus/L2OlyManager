@@ -21,5 +21,8 @@
   "min_matches_for_hero": 9,
   "_min_matches_help": "Matches a member needs to be Hero-eligible. Set to 0 if you don't track matches.",
 
+  "log_channel_id": 0,
+  "_log_channel_help": "Channel ID for the bot's master log (errors + status changes). 0 disables it.",
+
   "database_path": "olympiad.db"
 }

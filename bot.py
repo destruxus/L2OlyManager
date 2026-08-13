@@ -20,6 +20,7 @@ Run with:  python bot.py   (reads config.json next to this file)
 
 import json
 import os
+import traceback
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -48,6 +49,7 @@ ADMIN_ROLE = CONFIG.get("admin_role_name", "Olympiad Manager")
 MARGIN = int(CONFIG.get("contested_margin", 30))
 MIN_MATCHES = int(CONFIG.get("min_matches_for_hero", 0))
 OVERVIEW_HOUR = int(CONFIG.get("overview_hour", 18))
+LOG_CHANNEL_ID = int(CONFIG.get("log_channel_id") or 0) or None
 DB_PATH = os.path.join(HERE, CONFIG.get("database_path", "olympiad.db"))
 
 HIDDEN_CATEGORY = "Grand Olympiad"
@@ -93,6 +95,26 @@ def is_admin(interaction: discord.Interaction) -> bool:
     if interaction.user.guild_permissions.administrator:
         return True
     return any(r.name == ADMIN_ROLE for r in getattr(interaction.user, "roles", []))
+
+
+async def log_event(text: str, error: bool = False):
+    """Send a line to the master log channel (errors + status changes)."""
+    if not LOG_CHANNEL_ID:
+        return
+    channel = bot.get_channel(LOG_CHANNEL_ID)
+    if channel is None:
+        return
+    icon = "🔴" if error else "🟢"
+    stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
+    try:
+        await channel.send(f"{icon} `{stamp}` {text}"[:1990])
+    except discord.HTTPException:
+        pass
+
+
+async def _log_task_error(exc: BaseException):
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    await log_event(f"Scheduled task error:\n```\n{tb[-1400:]}\n```", error=True)
 
 
 async def class_autocomplete(interaction: discord.Interaction, current: str):
@@ -735,13 +757,42 @@ async def on_ready():
     bot.add_view(RequestActionView())  # re-bind candidate-request buttons
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     for loop in (scheduler, friday_boards, saturday_boards, hero_prediction):
+        loop.error(_log_task_error)   # report task crashes to the log channel
         if not loop.is_running():
             loop.start()
     await refresh_overview()  # keep the live overview current after a restart
     await refresh_candidate_overview()
     await refresh_all_class_boards()
     await update_admin_dashboard()
+    await log_event(f"Bot online — logged in as {bot.user}.")
     print(f"Logged in as {bot.user} — ready.")
+
+
+@bot.event
+async def on_resumed():
+    await log_event("Gateway session resumed.")
+
+
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    tb = traceback.format_exc()
+    await log_event(f"Error in event **{event_method}**:\n```\n{tb[-1400:]}\n```",
+                    error=True)
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    cmd = interaction.command.name if interaction.command else "?"
+    await log_event(f"Error in command **/{cmd}**:\n```\n{tb[-1400:]}\n```", error=True)
+    msg = "Something went wrong — the log channel has the details."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
 @bot.event
@@ -830,6 +881,7 @@ async def friday_boards():
     if datetime.now(timezone.utc).weekday() != 4:      # 4 = Friday
         return
     await post_class_boards(bot, db, await get_month(), MARGIN, "Pre-Olympiad")
+    await log_event("Posted Pre-Olympiad boards to class points threads.")
 
 
 @friday_boards.before_loop
@@ -843,6 +895,7 @@ async def saturday_boards():
     if datetime.now(timezone.utc).weekday() != 5:      # 5 = Saturday
         return
     await post_class_boards(bot, db, await get_month(), MARGIN, "Weekend results")
+    await log_event("Posted Weekend results boards to class points threads.")
 
 
 @saturday_boards.before_loop
@@ -865,6 +918,7 @@ async def hero_prediction():
     embed = await build_hero_prediction(db, await get_month())
     try:
         await channel.send(embed=embed)
+        await log_event("Posted month-end Hero Prediction to announcements.")
     except discord.HTTPException:
         pass
 
@@ -895,6 +949,8 @@ async def do_close_month(announce_channel_id: int | None):
     # Open the next month.
     first_next = (now_local().replace(day=1) + timedelta(days=32)).replace(day=1)
     await db.set_setting("current_month", month_label(first_next))
+    await log_event(f"Month **{month}** closed — {len(winners)} Heroes archived, "
+                    f"new cycle opened.")
 
     if announce_channel_id:
         channel = bot.get_channel(announce_channel_id)
