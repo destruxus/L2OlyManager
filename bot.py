@@ -97,6 +97,52 @@ def is_admin(interaction: discord.Interaction) -> bool:
     return any(r.name == ADMIN_ROLE for r in getattr(interaction.user, "roles", []))
 
 
+def build_howto_embed() -> discord.Embed:
+    """Public-features guide posted in #how-to-use."""
+    e = discord.Embed(
+        title="📖 How to use the Olympiad bot",
+        colour=0x1ABC9C,
+        description="Everything a member needs. Managers have extra tools elsewhere.",
+    )
+    e.add_field(
+        name="📊 Log a score",
+        value="In a class's **📊 points** thread (or **#general-points**) just type "
+              "the character and points: `Xyzabc 180`. Add matches with a second "
+              "number: `Xyzabc 180 9`.\nA new name is asked which **class** and "
+              "**clan** it is; known names update automatically (✅).",
+        inline=False,
+    )
+    e.add_field(
+        name="🎭 See only your classes",
+        value="In **#class-signup**, pick the classes you follow — their channels "
+              "appear for you. Each class channel has **📋 class standing** (live "
+              "top 10), **📊 points**, and **💬 discussion**.",
+        inline=False,
+    )
+    e.add_field(
+        name="🏆 Live overviews",
+        value="**#overview** — our Hero candidate vs the leading rival, per class.\n"
+              "**#candidate-overview** — every class's Hero candidate(s).\n"
+              "Both update automatically as scores come in.",
+        inline=False,
+    )
+    e.add_field(
+        name="🔎 Commands (type `/`)",
+        value="`/standing [class]` — current standings for a class\n"
+              "`/roster <class>` — who's tracked in a class\n"
+              "`/candidate-request <class> <name>` — ask to be the Hero candidate; "
+              "a manager approves or declines it.",
+        inline=False,
+    )
+    e.add_field(
+        name="Legend",
+        value="👑 Hero candidate · 🐺 Wolfpack · ❓ Unknown ally · ⚔️ rival",
+        inline=False,
+    )
+    e.set_footer(text="Questions? Ask in #general-discussion.")
+    return e
+
+
 async def log_event(text: str, error: bool = False):
     """Send a line to the master log channel (errors + status changes)."""
     if not LOG_CHANNEL_ID:
@@ -1000,11 +1046,16 @@ async def setup(interaction: discord.Interaction, force: bool = False):
     if hub is None:
         hub = await guild.create_category(HUB_CATEGORY)
 
-    async def ensure_text_channel(name, category, can_send_everyone, topic=None):
+    async def ensure_text_channel(name, category, can_send_everyone, topic=None,
+                                  admin_writable=False):
         existing = discord.utils.get(guild.text_channels, name=name)
         if existing:
             if topic and existing.topic != topic:
                 await existing.edit(topic=topic)
+            if admin_writable:
+                await existing.set_permissions(
+                    admin_role, view_channel=True, send_messages=True
+                )
             return existing
         overwrites = {
             everyone: discord.PermissionOverwrite(
@@ -1012,6 +1063,10 @@ async def setup(interaction: discord.Interaction, force: bool = False):
             ),
             me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
+        if admin_writable:
+            overwrites[admin_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True
+            )
         return await guild.create_text_channel(
             name, category=category, overwrites=overwrites, topic=topic
         )
@@ -1041,6 +1096,28 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         "candidate-overview", hub, False,
         "🎖️ All our Hero candidates per class, and which classes still need one. Auto-updates.",
     )
+    howto = await ensure_text_channel(
+        "how-to-use", hub, False,
+        "📖 How to use the Olympiad bot — read-only guide to public features.",
+        admin_writable=True,
+    )
+    await db.set_setting("howto_channel_id", howto.id)
+    # Post or refresh the how-to guide (kept up to date on each /setup).
+    guide = build_howto_embed()
+    hid = await db.get_setting("howto_message_id")
+    done = False
+    if hid:
+        try:
+            await howto.get_partial_message(int(hid)).edit(embed=guide)
+            done = True
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            done = True
+    if not done:
+        m = await howto.send(embed=guide)
+        await db.set_setting("howto_message_id", m.id)
+
     await db.set_setting("announcements_channel_id", announcements.id)
     await db.set_setting("discussion_channel_id", discussion.id)
     await db.set_setting("signup_channel_id", signup.id)
