@@ -690,6 +690,24 @@ class RequestActionView(discord.ui.View):
         embed.add_field(name="Resolution", value=note, inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
 
+        # DM the requester the outcome (best effort — they may have DMs off).
+        if req["requester_id"]:
+            try:
+                user = bot.get_user(req["requester_id"]) or await bot.fetch_user(req["requester_id"])
+                if user is not None:
+                    if approve:
+                        dm = (f"✅ Your candidate request for **{req['name']}** "
+                              f"(**{cname}**) was **approved** by "
+                              f"{interaction.user.display_name}. You're now a Hero "
+                              f"candidate — good luck!")
+                    else:
+                        dm = (f"✖️ Your candidate request for **{req['name']}** "
+                              f"(**{cname}**) was **declined** by "
+                              f"{interaction.user.display_name}.")
+                    await user.send(dm)
+            except (discord.Forbidden, discord.HTTPException):
+                pass  # DMs closed or user unreachable
+
     @discord.ui.button(label="Approve", emoji="✅",
                        style=discord.ButtonStyle.success, custom_id="req:approve")
     async def approve(self, interaction, button):
