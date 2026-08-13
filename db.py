@@ -76,6 +76,17 @@ CREATE TABLE IF NOT EXISTS heroes (
     FOREIGN KEY (contestant_id) REFERENCES contestants(id)
 );
 
+CREATE TABLE IF NOT EXISTS candidate_requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id     INTEGER NOT NULL,
+    name         TEXT NOT NULL,          -- the character being put forward
+    requester_id INTEGER,                -- Discord user who requested
+    status       TEXT NOT NULL DEFAULT 'pending',  -- pending / approved / denied
+    message_id   INTEGER,                -- the approval message in #set-candidates
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_snapshots_contestant
     ON snapshots (contestant_id, month);
 """
@@ -357,6 +368,40 @@ async def dashboard_counts(month: str) -> dict:
         "candidates": cand[0], "classes_with_candidate": cand[1],
         "snapshots": snaps,
     }
+
+
+# ---------------------------------------------------------------------------
+# candidate requests
+# ---------------------------------------------------------------------------
+async def create_request(class_id: int, name: str, requester_id: int) -> int:
+    cur = await _db.execute(
+        "INSERT INTO candidate_requests(class_id, name, requester_id) VALUES(?, ?, ?)",
+        (class_id, name, requester_id),
+    )
+    await _db.commit()
+    return cur.lastrowid
+
+
+async def set_request_message(request_id: int, message_id: int) -> None:
+    await _db.execute(
+        "UPDATE candidate_requests SET message_id = ? WHERE id = ?",
+        (message_id, request_id),
+    )
+    await _db.commit()
+
+
+async def get_request_by_message(message_id: int) -> aiosqlite.Row | None:
+    async with _db.execute(
+        "SELECT * FROM candidate_requests WHERE message_id = ?", (message_id,)
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def resolve_request(request_id: int, status: str) -> None:
+    await _db.execute(
+        "UPDATE candidate_requests SET status = ? WHERE id = ?", (status, request_id)
+    )
+    await _db.commit()
 
 
 async def heroes_for_month(month: str) -> list[aiosqlite.Row]:

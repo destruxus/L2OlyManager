@@ -582,6 +582,57 @@ async def update_admin_dashboard():
     await db.set_setting("admin_dashboard_message_id", msg.id)
 
 
+# ---------------------------------------------------------------------------
+# Candidate requests — anyone can request, managers approve/disapprove
+# ---------------------------------------------------------------------------
+class RequestActionView(discord.ui.View):
+    """Persistent Approve/Disapprove buttons on a candidate-request message.
+    The request is looked up by the message id, so this survives restarts."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _resolve(self, interaction, approve: bool):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Managers only.", ephemeral=True)
+            return
+        req = await db.get_request_by_message(interaction.message.id)
+        if req is None or req["status"] != "pending":
+            await interaction.response.send_message(
+                "This request is no longer pending.", ephemeral=True
+            )
+            return
+        cls = await db.get_class_by_id(req["class_id"])
+        cname = cls["name"] if cls else "?"
+        if approve:
+            await db.add_contestant(req["name"], req["class_id"], is_member=True, clan=OUR_CLAN)
+            await db.mark_candidate(req["name"], req["class_id"], True)
+            await db.resolve_request(req["id"], "approved")
+            await after_change(req["class_id"])
+            note = (f"✅ Approved by {interaction.user.mention} — 👑 **{req['name']}** "
+                    f"is now a candidate for **{cname}**.")
+            colour = 0x2ECC71
+        else:
+            await db.resolve_request(req["id"], "denied")
+            note = (f"✖️ Disapproved by {interaction.user.mention} — request for "
+                    f"**{req['name']}** ({cname}) declined.")
+            colour = 0xE74C3C
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.colour = discord.Colour(colour)
+        embed.add_field(name="Resolution", value=note, inline=False)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Approve", emoji="✅",
+                       style=discord.ButtonStyle.success, custom_id="req:approve")
+    async def approve(self, interaction, button):
+        await self._resolve(interaction, True)
+
+    @discord.ui.button(label="Disapprove", emoji="✖️",
+                       style=discord.ButtonStyle.danger, custom_id="req:deny")
+    async def deny(self, interaction, button):
+        await self._resolve(interaction, False)
+
+
 async def update_class_board(class_id: int):
     """Edit (or post) the always-on top-10 board in the class's own
     'class standing' thread, under that class's channel."""
@@ -680,7 +731,8 @@ async def on_ready():
     rows = await db.list_classes()
     if rows and all(r["role_id"] for r in rows):
         bot.add_view(build_signup_view(rows))
-    bot.add_view(DashboardView())  # re-bind dashboard buttons after restart
+    bot.add_view(DashboardView())      # re-bind dashboard buttons after restart
+    bot.add_view(RequestActionView())  # re-bind candidate-request buttons
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     for loop in (scheduler, friday_boards, saturday_boards, hero_prediction):
         if not loop.is_running():
@@ -1221,6 +1273,38 @@ async def roster(interaction: discord.Interaction, class_name: str):
     embed.add_field(name="Our side", value="\n".join(ours) or "—", inline=True)
     embed.add_field(name="Rivals", value="\n".join(rivals) or "—", inline=True)
     await interaction.response.send_message(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /candidate-request  (anyone) — ask managers to be made a Hero candidate
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="candidate-request", guild=discord.Object(id=GUILD_ID),
+                  description="Request to be the Hero candidate for a class.")
+@app_commands.describe(class_name="Class", name="Character name to put forward")
+@app_commands.autocomplete(class_name=class_autocomplete)
+async def candidate_request(interaction: discord.Interaction, class_name: str, name: str):
+    cls = await db.get_class_by_name(class_name)
+    if cls is None:
+        await interaction.response.send_message("Unknown class.", ephemeral=True)
+        return
+    if not candidates_channel_id or bot.get_channel(candidates_channel_id) is None:
+        await interaction.response.send_message(
+            "Setup isn't complete yet — no managers channel.", ephemeral=True
+        )
+        return
+    channel = bot.get_channel(candidates_channel_id)
+    name = name.strip()
+    req_id = await db.create_request(cls["id"], name, interaction.user.id)
+    embed = discord.Embed(title="🙋 Candidate Request", colour=0xF1C40F)
+    embed.add_field(name="Class", value=cls["name"], inline=True)
+    embed.add_field(name="Candidate", value=name, inline=True)
+    embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+    msg = await channel.send(embed=embed, view=RequestActionView())
+    await db.set_request_message(req_id, msg.id)
+    await interaction.response.send_message(
+        f"Request submitted for **{cls['name']}** — a manager will review it.",
+        ephemeral=True,
+    )
 
 
 # ---------------------------------------------------------------------------
