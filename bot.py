@@ -307,21 +307,23 @@ SIGNUP_TEXT = (
 
 
 async def ensure_signup_menu(channel):
-    """Make sure the signup menu message is actually present in `channel`.
-    Re-registers the handler if it exists; reposts it if it was deleted."""
+    """Ensure the signup menu is present AND up to date. Rebuilds the dropdowns
+    from the current class list and edits the existing message in place (so new
+    classes like Ghost Sentinel show up); reposts it if it was deleted."""
     rows = await db.list_classes()
     view = build_signup_view(rows)
+    bot.add_view(view)              # (re)bind the button/select handlers
     mid = await db.get_setting("signup_message_id")
     if mid:
         try:
-            await channel.fetch_message(int(mid))
-            bot.add_view(view)      # still there — just rebind the handler
+            await channel.get_partial_message(int(mid)).edit(
+                content=SIGNUP_TEXT, view=view
+            )
             return
         except discord.NotFound:
             pass                    # was deleted — repost below
         except discord.HTTPException:
             return
-    bot.add_view(view)
     msg = await channel.send(SIGNUP_TEXT, view=view)
     await db.set_setting("signup_message_id", msg.id)
 
@@ -1249,18 +1251,23 @@ async def setup(interaction: discord.Interaction, force: bool = False):
         created += 1
 
     # ---- Sort class channels alphabetically within the category ----
-    # Moving each to the end in A→Z order leaves the category alphabetical.
+    # One atomic bulk position update — per-channel moves read stale cached
+    # positions between calls and never settle, so we compute the whole order
+    # once and send it in a single request.
     ordered = sorted(
         (r for r in await db.list_classes() if r["channel_id"]),
         key=lambda r: r["name"].lower(),
     )
-    for r in ordered:
+    payload = []
+    for i, r in enumerate(ordered):
         ch = guild.get_channel(r["channel_id"])
         if ch is not None:
-            try:
-                await ch.move(end=True, category=hidden)
-            except discord.HTTPException:
-                pass
+            payload.append({"id": ch.id, "position": i, "parent_id": hidden.id})
+    if payload:
+        try:
+            await guild._state.http.bulk_channel_update(guild.id, payload)
+        except discord.HTTPException:
+            pass
 
     # ---- Manager-only staff area (hidden from everyone but the admin role) ----
     staff = discord.utils.get(guild.categories, name=STAFF_CATEGORY)
