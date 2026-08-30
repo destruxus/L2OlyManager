@@ -134,7 +134,9 @@ def build_howto_embed() -> discord.Embed:
         value="`/standing [class]` — current standings for a class\n"
               "`/roster <class>` — who's tracked in a class\n"
               "`/candidate-request <class> <name>` — ask to be the Hero candidate; "
-              "a manager approves or declines it.",
+              "a manager approves or declines it and you get a DM with the result\n"
+              "`/edit <name>` — update someone's class/clan (e.g. when they join or "
+              "leave a clan) using the same class + clan picker as adding.",
         inline=False,
     )
     e.add_field(
