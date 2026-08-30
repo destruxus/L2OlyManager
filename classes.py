@@ -69,20 +69,34 @@ def channel_name(class_name: str) -> str:
 # ---------------------------------------------------------------------------
 OUR_CLAN = "Wolfpack"
 
+# 'custom_names' are the names of server (custom) emojis to prefer if they exist;
+# the unicode 'emoji' is the fallback. Matching is case-insensitive.
 AFFILIATIONS = [
-    {"label": "Wolfpack",        "emoji": "🐺", "friendly": True},   # our clan
-    {"label": "Angels Of Death", "emoji": "💀", "friendly": True},   # allied clan (AoD)
-    {"label": "Unknown",         "emoji": "❓", "friendly": True},   # allied clan, name TBD
-    {"label": "Rival",           "emoji": "⚔️", "friendly": False},
+    {"label": "Wolfpack",        "emoji": "🐺", "friendly": True,
+     "custom_names": ["WP", "Wolfpack"]},                       # our clan
+    {"label": "Angels Of Death", "emoji": "💀", "friendly": True,
+     "custom_names": ["AoD", "AngelsOfDeath"]},                 # allied clan (AoD)
+    {"label": "Unknown",         "emoji": "❓", "friendly": True,
+     "custom_names": ["Unk", "Unknown"]},                       # allied clan, name TBD
+    {"label": "Rival",           "emoji": "⚔️", "friendly": False,
+     "custom_names": []},
 ]
 
 _CLAN_EMOJI = {a["label"]: a["emoji"] for a in AFFILIATIONS}
 _CLAN_FRIENDLY = {a["label"]: a["friendly"] for a in AFFILIATIONS}
+_RESOLVED_CUSTOM = {}   # label -> "<:name:id>" string, filled at runtime by the bot
+
+
+def set_resolved_emoji(label: str, emoji_str: str) -> None:
+    """Called by the bot once it has found a class's custom server emoji."""
+    _RESOLVED_CUSTOM[label] = emoji_str
 
 
 def clan_emoji(clan, is_member=None) -> str:
-    """Emoji for a clan label, with a fallback for legacy rows that only have
-    the old is_member flag."""
+    """Emoji for a clan label — a custom server emoji if one was resolved,
+    otherwise the unicode fallback (and a fallback for legacy is_member rows)."""
+    if clan and clan in _RESOLVED_CUSTOM:
+        return _RESOLVED_CUSTOM[clan]
     if clan and clan in _CLAN_EMOJI:
         return _CLAN_EMOJI[clan]
     if is_member is None:
@@ -97,5 +111,5 @@ def is_friendly(clan) -> bool:
 
 def clan_legend() -> str:
     """A '🐺 Wolfpack · 💀 Angels Of Death · …' legend built from the list above,
-    so it stays in sync whenever a clan is added."""
-    return " · ".join(f"{a['emoji']} {a['label']}" for a in AFFILIATIONS)
+    using custom server emojis where resolved, so it stays in sync."""
+    return " · ".join(f"{clan_emoji(a['label'])} {a['label']}" for a in AFFILIATIONS)

@@ -31,6 +31,7 @@ from discord.ext import commands, tasks
 import db
 from classes import (
     CLASSES, channel_name, AFFILIATIONS, clan_emoji, clan_legend, OUR_CLAN,
+    set_resolved_emoji,
 )
 from overview import (
     post_overview, build_standing_embed, build_live_overview, post_class_boards,
@@ -165,6 +166,24 @@ async def _log_task_error(exc: BaseException):
     await log_event(f"Scheduled task error:\n```\n{tb[-1400:]}\n```", error=True)
 
 
+# Custom server-emoji objects per clan label (for buttons; text uses the string).
+clan_button_emoji: dict = {}
+
+
+def resolve_clan_emojis(guild):
+    """Find each clan's custom server emoji by name (case-insensitive) and use it
+    everywhere; unresolved clans keep their unicode fallback."""
+    clan_button_emoji.clear()
+    by_name = {e.name.lower(): e for e in guild.emojis}
+    for aff in AFFILIATIONS:
+        for cand in aff.get("custom_names", []):
+            em = by_name.get(cand.lower())
+            if em is not None:
+                clan_button_emoji[aff["label"]] = em
+                set_resolved_emoji(aff["label"], str(em))
+                break
+
+
 async def class_autocomplete(interaction: discord.Interaction, current: str):
     current = current.lower()
     return [
@@ -185,7 +204,8 @@ def _affiliation_button(aff):
         style = discord.ButtonStyle.success
     else:
         style = discord.ButtonStyle.secondary
-    return discord.ui.Button(label=aff["label"], emoji=aff["emoji"], style=style)
+    emoji = clan_button_emoji.get(aff["label"], aff["emoji"])  # custom if resolved
+    return discord.ui.Button(label=aff["label"], emoji=emoji, style=style)
 
 
 class NewContestantView(discord.ui.View):
@@ -799,6 +819,9 @@ async def refresh_overview():
 @bot.event
 async def on_ready():
     await db.init_db(DB_PATH)
+    guild = bot.get_guild(GUILD_ID)
+    if guild is not None:
+        resolve_clan_emojis(guild)   # prefer custom server emojis for clans
     # Remember the special channels across restarts.
     global general_points_id, candidates_channel_id
     global overview_channel_id, overview_message_id
