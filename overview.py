@@ -8,7 +8,7 @@ It compares a member's points against the strongest rival in the same class.
 
 import discord
 
-from classes import clan_emoji
+from classes import clan_emoji, clan_legend
 
 # Colours for the standing embeds.
 GREEN = 0x2ECC71
@@ -101,7 +101,7 @@ def build_standing_embed(class_name: str, rows, margin: int, month: str,
             verdicts.append(f"{emoji} **{m['name']}** — {label}")
         embed.add_field(name="Our contestants", value="\n".join(verdicts), inline=False)
 
-    embed.set_footer(text="🐺 Wolfpack · ❓ Unknown · ⚔️ Rival")
+    embed.set_footer(text=clan_legend())
     return embed
 
 

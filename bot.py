@@ -29,7 +29,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import db
-from classes import CLASSES, channel_name, AFFILIATIONS, clan_emoji, OUR_CLAN
+from classes import (
+    CLASSES, channel_name, AFFILIATIONS, clan_emoji, clan_legend, OUR_CLAN,
+)
 from overview import (
     post_overview, build_standing_embed, build_live_overview, post_class_boards,
     build_candidate_overview, build_hero_prediction, build_admin_dashboard,
@@ -136,7 +138,7 @@ def build_howto_embed() -> discord.Embed:
     )
     e.add_field(
         name="Legend",
-        value="👑 Hero candidate · 🐺 Wolfpack · ❓ Unknown · ⚔️ rival",
+        value=f"👑 Hero candidate · {clan_legend()}",
         inline=False,
     )
     e.set_footer(text="Questions? Ask in #general-discussion.")
@@ -516,7 +518,10 @@ async def handle_set_candidates(message: discord.Message):
             elif target:
                 missing.append(target)
         else:
-            await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
+            # Preserve an existing contestant's clan (they may be an ally, not
+            # Wolfpack); only default to our clan when creating a brand-new one.
+            if await db.get_contestant(n, cls["id"]) is None:
+                await db.add_contestant(n, cls["id"], is_member=True, clan=OUR_CLAN)
             await db.mark_candidate(n, cls["id"], True)
             added.append(n)
 

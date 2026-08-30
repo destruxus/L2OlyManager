@@ -70,9 +70,10 @@ def channel_name(class_name: str) -> str:
 OUR_CLAN = "Wolfpack"
 
 AFFILIATIONS = [
-    {"label": "Wolfpack", "emoji": "🐺", "friendly": True},
-    {"label": "Unknown",  "emoji": "❓", "friendly": True},   # allied clan, name TBD
-    {"label": "Rival",    "emoji": "⚔️", "friendly": False},
+    {"label": "Wolfpack",        "emoji": "🐺", "friendly": True},   # our clan
+    {"label": "Angels Of Death", "emoji": "💀", "friendly": True},   # allied clan (AoD)
+    {"label": "Unknown",         "emoji": "❓", "friendly": True},   # allied clan, name TBD
+    {"label": "Rival",           "emoji": "⚔️", "friendly": False},
 ]
 
 _CLAN_EMOJI = {a["label"]: a["emoji"] for a in AFFILIATIONS}
@@ -92,3 +93,9 @@ def clan_emoji(clan, is_member=None) -> str:
 def is_friendly(clan) -> bool:
     """Whether a clan counts as on our side (defaults to friendly if unknown)."""
     return _CLAN_FRIENDLY.get(clan, True)
+
+
+def clan_legend() -> str:
+    """A '🐺 Wolfpack · 💀 Angels Of Death · …' legend built from the list above,
+    so it stays in sync whenever a clan is added."""
+    return " · ".join(f"{a['emoji']} {a['label']}" for a in AFFILIATIONS)
