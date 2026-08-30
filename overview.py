@@ -298,9 +298,10 @@ async def build_live_overview(db, month: str, margin: int):
     classes = await db.list_classes()
 
     def person(p):
+        tag = clan_emoji(p["clan"], p["is_member"])
         if p["is_candidate"]:
-            return f"\U0001F451 **{p['name']}**"           # 👑 + bold
-        return f"{clan_emoji(p['clan'], p['is_member'])} {p['name']}"
+            return f"\U0001F451 {tag} **{p['name']}**"      # 👑 + clan + bold
+        return f"{tag} {p['name']}"
 
     rows = []
     for cl in classes:
