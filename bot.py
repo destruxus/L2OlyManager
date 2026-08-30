@@ -458,6 +458,43 @@ class PickClassUpdateView(discord.ui.View):
         self.add_item(ClassUpdateSelect(rows))
 
 
+class EditContestantView(discord.ui.View):
+    """Same class + clan picker as adding a new name, but it only updates the
+    contestant's class/clan (no score) — used by /edit when someone changes clan."""
+
+    def __init__(self, name, class_rows):
+        super().__init__(timeout=300)
+        self.name = name
+        self.selected_class_id = None
+        self.selected_class_name = None
+        for chunk, letters in alpha_chunks(class_rows):
+            self.add_item(ClassPickSelect(chunk, letters))
+        for aff in AFFILIATIONS:
+            btn = _affiliation_button(aff)
+            btn.callback = self._make_cb(aff["label"], aff["friendly"])
+            self.add_item(btn)
+
+    def _make_cb(self, clan, friendly):
+        async def cb(interaction):
+            await self._save(interaction, clan, friendly)
+        return cb
+
+    async def _save(self, interaction: discord.Interaction, clan: str, friendly: bool):
+        if self.selected_class_id is None:
+            await interaction.response.send_message(
+                "Pick a class from the menu first.", ephemeral=True
+            )
+            return
+        await db.add_contestant(self.name, self.selected_class_id, friendly, clan)
+        await interaction.response.edit_message(
+            content=f"**{self.name}** in **{self.selected_class_name}** set to "
+                    f"{clan_emoji(clan)} **{clan}**.",
+            view=None,
+        )
+        self.stop()
+        await after_change(self.selected_class_id)
+
+
 async def handle_general_points(message: discord.Message):
     """Score posted in the general points channel (class unknown)."""
     parsed = parse_score(message.content)
@@ -1490,6 +1527,24 @@ async def candidate_request(interaction: discord.Interaction, class_name: str, n
     await interaction.response.send_message(
         f"Request submitted for **{cls['name']}** — a manager will review it.",
         ephemeral=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /edit  (admin) — change a contestant's class/clan (e.g. clan change)
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="edit", guild=discord.Object(id=GUILD_ID),
+                  description="Change a contestant's class/clan (admin).")
+@app_commands.describe(name="Character name to edit")
+async def edit_contestant(interaction: discord.Interaction, name: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    class_rows = await db.list_classes()
+    view = EditContestantView(name.strip(), class_rows)
+    await interaction.response.send_message(
+        f"Editing **{name.strip()}** — pick the class, then choose the clan:",
+        view=view, ephemeral=True,
     )
 
 
