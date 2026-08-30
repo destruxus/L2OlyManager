@@ -1534,12 +1534,9 @@ async def candidate_request(interaction: discord.Interaction, class_name: str, n
 # /edit  (admin) — change a contestant's class/clan (e.g. clan change)
 # ---------------------------------------------------------------------------
 @bot.tree.command(name="edit", guild=discord.Object(id=GUILD_ID),
-                  description="Change a contestant's class/clan (admin).")
+                  description="Change a contestant's class/clan.")
 @app_commands.describe(name="Character name to edit")
 async def edit_contestant(interaction: discord.Interaction, name: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("Admins only.", ephemeral=True)
-        return
     class_rows = await db.list_classes()
     view = EditContestantView(name.strip(), class_rows)
     await interaction.response.send_message(
