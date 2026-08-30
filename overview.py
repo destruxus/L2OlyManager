@@ -309,11 +309,33 @@ async def build_live_overview(db, month: str, margin: int):
         if not srows:
             continue                                        # only classes with a score
         leader = srows[0]
-        scored_cands = [r for r in srows if r["is_candidate"]]
         cname = cl["name"]
+        scored_cands = [r for r in srows if r["is_candidate"]]
 
-        if leader["is_candidate"]:
-            # Our candidate is #1 — show the closest chaser.
+        # Our "representative" for the row: the scored candidate; else a
+        # designated candidate that hasn't scored; else — when there is no
+        # candidate at all — the top-scoring friendly-clan player.
+        if scored_cands:
+            rep = scored_cands[0]
+        else:
+            people = await db.list_contestants(cl["id"])
+            cand0 = next((p for p in people if p["is_candidate"]), None)
+            if cand0:
+                rows.append((10 ** 7,
+                    f"{W} **{cname}** — {person(leader)} {leader['points']}  ·  "
+                    f"us \U0001F451 {clan_emoji(cand0['clan'], True)} "
+                    f"**{cand0['name']}** (no score)"))
+                continue
+            friendly = [r for r in srows if r["is_member"]]
+            if not friendly:
+                rows.append((10 ** 7,
+                    f"{W} **{cname}** — {person(leader)} {leader['points']}  ·  "
+                    f"no friendly scored"))
+                continue
+            rep = friendly[0]   # no candidate → show the top friendly instead
+
+        if rep["id"] == leader["id"]:
+            # Our rep is #1 — show the closest chaser.
             chaser = srows[1] if len(srows) > 1 else None
             if chaser:
                 gap = leader["points"] - chaser["points"]
@@ -325,22 +347,13 @@ async def build_live_overview(db, month: str, margin: int):
                 line = (f"{G} **{cname}** — {person(leader)} {leader['points']}  ·  "
                         f"solo (leading)")
                 sort_val = 10 ** 6
-        elif scored_cands:
-            # Someone else leads; our candidate has a score — show the gap.
-            cand = scored_cands[0]
-            gap = cand["points"] - leader["points"]         # negative
+        else:
+            # Someone else leads; show our rep and how far behind.
+            gap = rep["points"] - leader["points"]          # negative
             status = R if gap < -margin else Y
             line = (f"{status} **{cname}** — {person(leader)} {leader['points']}  ·  "
-                    f"us {person(cand)} {cand['points']} ({gap})")
+                    f"us {person(rep)} {rep['points']} ({gap})")
             sort_val = gap
-        else:
-            # Someone else leads and we have no scoring candidate here.
-            people = await db.list_contestants(cl["id"])
-            cand0 = next((p for p in people if p["is_candidate"]), None)
-            tail = (f"us \U0001F451 **{cand0['name']}** (no score)"
-                    if cand0 else "no candidate")
-            line = f"{W} **{cname}** — {person(leader)} {leader['points']}  ·  {tail}"
-            sort_val = 10 ** 7
         rows.append((sort_val, line))
 
     rows.sort(key=lambda x: x[0])
